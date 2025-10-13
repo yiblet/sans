@@ -3,33 +3,60 @@
 //! This module provides functions for creating [`InitSans`](crate::InitSans) coroutines
 //! that yield an initial value before processing input.
 
-use super::func::{FromFn, Once, Repeat};
-use crate::{Sans, Step};
+use std::marker::PhantomData;
 
-/// Create an `InitSans` by pairing an initial output with a continuation.
+use super::func::{FromFn, Once, Repeat};
+use crate::{InitSans, Sans, Step};
+
+/// A wrapper that adds an initial output value to any `Sans` coroutine.
 ///
-/// This is a convenience function for wrapping a `Sans` in the tuple form required
-/// by APIs like [`and_then`](crate::Sans::and_then). Instead of manually writing
-/// `(output, continuation)`, you can use `init(output, continuation)`.
+/// This struct allows you to create an `InitSans` from any existing `Sans` coroutine
+/// by providing an initial value that will be yielded before the wrapped coroutine
+/// begins processing input.
+///
+/// # Type Parameters
+///
+/// * `I` - The input type for the wrapped coroutine
+/// * `O` - The output type (both for initial value and wrapped coroutine)
+/// * `S` - The wrapped `Sans` coroutine type
+pub struct Init<I, O, S: Sans<I, O>>(O, S, PhantomData<I>);
+
+impl<I, O, S> InitSans<I, O> for Init<I, O, S>
+where
+    S: Sans<I, O>,
+{
+    type Next = S;
+    fn init(self) -> Step<(O, S), S::Return> {
+        Step::Yielded((self.0, self.1))
+    }
+}
+
+/// Creates an `InitSans` coroutine from an initial output value and a `Sans` coroutine.
+///
+/// This is a convenience function for constructing an `Init` wrapper that yields
+/// the provided output value first, then continues with the given coroutine.
+///
+/// # Parameters
+///
+/// * `output` - The initial value to yield before processing any input
+/// * `coro` - The `Sans` coroutine to wrap
+///
+/// # Returns
+///
+/// An `Init` wrapper that implements `InitSans`
 ///
 /// # Examples
 ///
 /// ```rust
 /// use sans::prelude::*;
 ///
-/// // Using init() with and_then
-/// let mut coro = once(|x: i32| x * 2)
-///     .and_then(|val| init(val * 10, repeat(move |x| x + val)));
-///
-/// assert_eq!(coro.next(5).unwrap_yielded(), 10);  // First coro: 5 * 2
-/// assert_eq!(coro.next(7).unwrap_yielded(), 70);  // Second coro init: 7 * 10
-/// assert_eq!(coro.next(3).unwrap_yielded(), 10);  // Second coro: 3 + 7
+/// let coro = init(42, repeat(|x: i32| x + 1));
+/// let (initial, mut cont) = coro.init().unwrap_yielded();
+/// assert_eq!(initial, 42);
+/// assert_eq!(cont.next(10).unwrap_yielded(), 11);
 /// ```
-pub fn init<I, O, S>(output: O, continuation: S) -> (O, S)
-where
-    S: Sans<I, O>,
-{
-    (output, continuation)
+pub fn init<I, O, S: Sans<I, O>>(output: O, coro: S) -> Init<I, O, S> {
+    Init(output, coro, PhantomData)
 }
 
 /// Yield an initial value, then apply a function once.
