@@ -128,10 +128,7 @@ where
 /// Async version of `handle`.
 ///
 /// Works with responder functions that return futures.
-pub async fn handle_async<S, I, O, R, Fut>(
-    coro: S,
-    responder: R,
-) -> <S::Next as Sans<I, O>>::Return
+pub async fn handle_async<S, I, O, R, Fut>(coro: S, responder: R) -> <S::Next as Sans<I, O>>::Return
 where
     S: InitSans<I, O>,
     S::Next: Sans<I, O>,

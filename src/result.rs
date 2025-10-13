@@ -517,12 +517,7 @@ where
     type Next = OkChain<S::Next, R>;
 
     fn init(mut self) -> Step<(O, Self::Next), Result<R::Return, E>> {
-        match self
-            .coro
-            .take()
-            .expect("OkChain coro must be Some")
-            .init()
-        {
+        match self.coro.take().expect("OkChain coro must be Some").init() {
             Step::Yielded((o, next)) => Step::Yielded((
                 o,
                 OkChain {
