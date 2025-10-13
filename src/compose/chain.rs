@@ -27,10 +27,9 @@ impl<I, O, L, R, F> Sans<I, O> for AndThen<L, R::Next, F>
 where
     L: Sans<I, O>,
     R: InitSans<I, O>,
-    R::Next: Sans<I, O>,
     F: FnOnce(L::Return) -> R,
 {
-    type Return = <R::Next as Sans<I, O>>::Return;
+    type Return = R::Return;
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
         self.state.next(input)
     }
@@ -45,10 +44,9 @@ impl<I, O, L, R, F> Sans<I, O> for AndThenState<L, R::Next, F>
 where
     L: Sans<I, O>,
     R: InitSans<I, O>,
-    R::Next: Sans<I, O>,
     F: FnOnce(L::Return) -> R,
 {
-    type Return = <R::Next as Sans<I, O>>::Return;
+    type Return = R::Return;
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
         match self {
             AndThenState::OnFirst(l, f) => match l.next(input) {
@@ -124,7 +122,6 @@ pub fn and_then<I, O, L, R, F>(l: L, f: F) -> AndThen<L, R::Next, F>
 where
     L: Sans<I, O>,
     R: InitSans<I, O>,
-    R::Next: Sans<I, O>,
     F: FnOnce(L::Return) -> R,
 {
     AndThen {
@@ -149,9 +146,8 @@ where
 /// This is used when chaining an initial coroutine (that yields immediately) with a coroutine.
 pub fn init_chain<I, O, L, R>(l: L, r: R) -> Chain<L, R>
 where
-    L: InitSans<I, O>,
+    L: InitSans<I, O, Return = I>,
     R: Sans<I, O>,
-    L::Next: Sans<I, O, Return = I>,
 {
     Chain(Some(l), r)
 }
@@ -184,13 +180,13 @@ where
 
 impl<I, O, L, R> InitSans<I, O> for Chain<L, R>
 where
-    L: InitSans<I, O>,
+    L: InitSans<I, O, Return = I>,
     R: Sans<I, O>,
-    L::Next: Sans<I, O, Return = I>,
 {
     type Next = either::Either<Chain<L::Next, R>, R>;
+    type Return = R::Return;
 
-    fn init(mut self) -> Step<(O, Self::Next), R::Return> {
+    fn init(mut self) -> Step<(O, Self::Next), Self::Return> {
         match self.0.take().expect("Chain left side must be Some").init() {
             Step::Yielded((o, next)) => {
                 Step::Yielded((o, either::Either::Left(Chain(Some(next), self.1))))

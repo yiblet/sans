@@ -99,8 +99,9 @@ where
     S: InitSans<I, Result<O, E>>,
 {
     type Next = ShortCircuit<S::Next, E>;
+    type Return = Result<S::Return, E>;
 
-    fn init(self) -> Step<(O, Self::Next), Result<<S::Next as Sans<I, Result<O, E>>>::Return, E>> {
+    fn init(self) -> Step<(O, Self::Next), Self::Return> {
         match self.coro.init() {
             Step::Yielded((Ok(o), next)) => Step::Yielded((
                 o,
@@ -163,7 +164,6 @@ pub fn ok_map<I, O, P, E, S, T, F>(coro: S, f: F) -> OkMap<S, T::Next, F>
 where
     S: Sans<I, O, Return = Result<P, E>>,
     T: InitSans<I, O>,
-    T::Next: Sans<I, O>,
     F: FnOnce(P) -> T,
 {
     OkMap {
@@ -176,10 +176,8 @@ where
 /// This is used when applying ok_map to a coroutine that yields immediately.
 pub fn init_ok_map<I, O, P, E, S, T, F>(coro: S, f: F) -> OkMap<S, T::Next, F>
 where
-    S: InitSans<I, O>,
-    S::Next: Sans<I, O, Return = Result<P, E>>,
+    S: InitSans<I, O, Return = Result<P, E>>,
     T: InitSans<I, O>,
-    T::Next: Sans<I, O>,
     F: FnOnce(P) -> T,
 {
     OkMap {
@@ -191,10 +189,9 @@ impl<I, O, P, E, S, T, F> Sans<I, O> for OkMap<S, T::Next, F>
 where
     S: Sans<I, O, Return = Result<P, E>>,
     T: InitSans<I, O>,
-    T::Next: Sans<I, O>,
     F: FnOnce(P) -> T,
 {
-    type Return = Result<<T::Next as Sans<I, O>>::Return, E>;
+    type Return = Result<T::Return, E>;
 
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
         match &mut self.state {
@@ -222,15 +219,14 @@ where
 
 impl<I, O, P, E, S, T, F> InitSans<I, O> for OkMap<S, T::Next, F>
 where
-    S: InitSans<I, O>,
-    S::Next: Sans<I, O, Return = Result<P, E>>,
+    S: InitSans<I, O, Return = Result<P, E>>,
     T: InitSans<I, O>,
-    T::Next: Sans<I, O>,
     F: FnOnce(P) -> T,
 {
     type Next = OkMap<S::Next, T::Next, F>;
+    type Return = Result<T::Return, E>;
 
-    fn init(self) -> Step<(O, Self::Next), Result<<T::Next as Sans<I, O>>::Return, E>> {
+    fn init(self) -> Step<(O, Self::Next), Self::Return> {
         let OkMapState::OnFirst(coro, f) = self.state else {
             unreachable!("OkMap::init called on OnSecond state")
         };
@@ -317,8 +313,7 @@ enum OkAndThenState<S, T, F> {
 pub fn ok_and_then<I, O, P, Q, E, S, T, F>(coro: S, f: F) -> OkAndThen<S, T::Next, F>
 where
     S: Sans<I, O, Return = Result<P, E>>,
-    T: InitSans<I, O>,
-    T::Next: Sans<I, O, Return = Result<Q, E>>,
+    T: InitSans<I, O, Return = Result<Q, E>>,
     F: FnOnce(P) -> T,
 {
     OkAndThen {
@@ -331,10 +326,8 @@ where
 /// This is used when applying ok_and_then to a coroutine that yields immediately.
 pub fn init_ok_and_then<I, O, P, Q, E, S, T, F>(coro: S, f: F) -> OkAndThen<S, T::Next, F>
 where
-    S: InitSans<I, O>,
-    S::Next: Sans<I, O, Return = Result<P, E>>,
+    S: InitSans<I, O, Return = Result<P, E>>,
     T: InitSans<I, O>,
-    T::Next: Sans<I, O, Return = Result<Q, E>>,
     F: FnOnce(P) -> T,
 {
     OkAndThen {
@@ -345,8 +338,7 @@ where
 impl<I, O, P, Q, E, S, T, F> Sans<I, O> for OkAndThen<S, T::Next, F>
 where
     S: Sans<I, O, Return = Result<P, E>>,
-    T: InitSans<I, O>,
-    T::Next: Sans<I, O, Return = Result<Q, E>>,
+    T: InitSans<I, O, Return = Result<Q, E>>,
     F: FnOnce(P) -> T,
 {
     type Return = Result<Q, E>;
@@ -377,15 +369,14 @@ where
 
 impl<I, O, P, Q, E, S, T, F> InitSans<I, O> for OkAndThen<S, T::Next, F>
 where
-    S: InitSans<I, O>,
-    S::Next: Sans<I, O, Return = Result<P, E>>,
-    T: InitSans<I, O>,
-    T::Next: Sans<I, O, Return = Result<Q, E>>,
+    S: InitSans<I, O, Return = Result<P, E>>,
+    T: InitSans<I, O, Return = Result<Q, E>>,
     F: FnOnce(P) -> T,
 {
     type Next = OkAndThen<S::Next, T::Next, F>;
+    type Return = Result<Q, E>;
 
-    fn init(self) -> Step<(O, Self::Next), Result<Q, E>> {
+    fn init(self) -> Step<(O, Self::Next), Self::Return> {
         let OkAndThenState::OnFirst(coro, f) = self.state else {
             unreachable!("OkAndThen::init called on OnSecond state")
         };
@@ -471,8 +462,7 @@ where
 /// This is used when applying ok_chain to a coroutine that yields immediately.
 pub fn init_ok_chain<I, O, E, S, R>(coro: S, next: R) -> OkChain<S, R>
 where
-    S: InitSans<I, O>,
-    S::Next: Sans<I, O, Return = Result<I, E>>,
+    S: InitSans<I, O, Return = Result<I, E>>,
     R: Sans<I, O>,
 {
     OkChain {
@@ -510,13 +500,13 @@ where
 
 impl<I, O, E, S, R> InitSans<I, O> for OkChain<S, R>
 where
-    S: InitSans<I, O>,
-    S::Next: Sans<I, O, Return = Result<I, E>>,
+    S: InitSans<I, O, Return = Result<I, E>>,
     R: Sans<I, O>,
 {
     type Next = OkChain<S::Next, R>;
+    type Return = Result<R::Return, E>;
 
-    fn init(mut self) -> Step<(O, Self::Next), Result<R::Return, E>> {
+    fn init(mut self) -> Step<(O, Self::Next), Self::Return> {
         match self.coro.take().expect("OkChain coro must be Some").init() {
             Step::Yielded((o, next)) => Step::Yielded((
                 o,
@@ -586,8 +576,7 @@ pub fn flatten<S>(coro: S) -> Flatten<S> {
 /// This is used when applying flatten to a coroutine that yields immediately.
 pub fn init_flatten<I, O, T, E, S>(coro: S) -> Flatten<S>
 where
-    S: InitSans<I, O>,
-    S::Next: Sans<I, O, Return = Result<Result<T, E>, E>>,
+    S: InitSans<I, O, Return = Result<Result<T, E>, E>>,
 {
     Flatten { coro }
 }
@@ -610,12 +599,12 @@ where
 
 impl<I, O, T, E, S> InitSans<I, O> for Flatten<S>
 where
-    S: InitSans<I, O>,
-    S::Next: Sans<I, O, Return = Result<Result<T, E>, E>>,
+    S: InitSans<I, O, Return = Result<Result<T, E>, E>>,
 {
     type Next = Flatten<S::Next>;
+    type Return = Result<T, E>;
 
-    fn init(self) -> Step<(O, Self::Next), Result<T, E>> {
+    fn init(self) -> Step<(O, Self::Next), Self::Return> {
         match self.coro.init() {
             Step::Yielded((o, next)) => Step::Yielded((o, Flatten { coro: next })),
             Step::Complete(Ok(Ok(t))) => Step::Complete(Ok(t)),
@@ -644,8 +633,7 @@ pub trait TrySans<I, O>: Sized {
     fn ok_and_then<P, Q, E, T, F>(self, f: F) -> OkAndThen<Self, T::Next, F>
     where
         Self: Sans<I, O, Return = Result<P, E>>,
-        T: InitSans<I, O>,
-        T::Next: Sans<I, O, Return = Result<Q, E>>,
+        T: InitSans<I, O, Return = Result<Q, E>>,
         F: FnOnce(P) -> T,
     {
         ok_and_then(self, f)
@@ -678,10 +666,8 @@ pub trait TryInitSans<I, O>: InitSans<I, O> + Sized {
     /// Maps `Ok` return values through a function that produces an `InitSans`.
     fn ok_map<P, E, T, F>(self, f: F) -> OkMap<Self, T::Next, F>
     where
-        Self: InitSans<I, O>,
-        Self::Next: Sans<I, O, Return = Result<P, E>>,
+        Self: InitSans<I, O, Return = Result<P, E>>,
         T: InitSans<I, O>,
-        T::Next: Sans<I, O>,
         F: FnOnce(P) -> T,
     {
         init_ok_map(self, f)
@@ -690,20 +676,17 @@ pub trait TryInitSans<I, O>: InitSans<I, O> + Sized {
     /// Chains through a function that produces an `InitSans` with a `Result` return type.
     fn ok_and_then<P, Q, E, T, F>(self, f: F) -> OkAndThen<Self, T::Next, F>
     where
-        Self: InitSans<I, O>,
-        Self::Next: Sans<I, O, Return = Result<P, E>>,
-        T: InitSans<I, O>,
-        T::Next: Sans<I, O, Return = Result<Q, E>>,
+        Self: InitSans<I, O, Return = Result<P, E>>,
+        T: InitSans<I, O, Return = Result<Q, E>>,
         F: FnOnce(P) -> T,
     {
-        init_ok_and_then(self, f)
+        init_ok_and_then::<I, O, P, Q, E, Self, T, F>(self, f)
     }
 
     /// Chains to another coroutine only if the first returns `Ok`.
     fn ok_chain<E, R>(self, next: R) -> OkChain<Self, R>
     where
-        Self: InitSans<I, O>,
-        Self::Next: Sans<I, O, Return = Result<I, E>>,
+        Self: InitSans<I, O, Return = Result<I, E>>,
         R: Sans<I, O>,
     {
         init_ok_chain(self, next)
@@ -712,8 +695,7 @@ pub trait TryInitSans<I, O>: InitSans<I, O> + Sized {
     /// Flattens nested `Result` types in the return value.
     fn flatten<T, E>(self) -> Flatten<Self>
     where
-        Self: InitSans<I, O>,
-        Self::Next: Sans<I, O, Return = Result<Result<T, E>, E>>,
+        Self: InitSans<I, O, Return = Result<Result<T, E>, E>>,
     {
         init_flatten(self)
     }

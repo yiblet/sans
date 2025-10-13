@@ -147,7 +147,7 @@ where
 pub fn init_poll<I, S, O, T>(init: T) -> Pollable<S, O, S::Return>
 where
     S: Sans<I, O>,
-    T: InitSans<I, O, Next = S>,
+    T: InitSans<I, O, Next = S, Return = S::Return>,
 {
     match init.init() {
         Step::Yielded((o, s)) => Pollable {
@@ -198,11 +198,9 @@ where
     S: Sans<I, O>,
 {
     type Next = Self;
+    type Return = Result<S::Return, PollError>;
 
-    fn init(
-        mut self,
-    ) -> Step<(PollOutput<I, O>, Self::Next), <Self::Next as Sans<Poll<I>, PollOutput<I, O>>>::Return>
-    {
+    fn init(mut self) -> Step<(PollOutput<I, O>, Self::Next), Self::Return> {
         match self.next(Poll::Poll) {
             Step::Yielded(o) => Step::Yielded((o, self)),
             Step::Complete(r) => Step::Complete(r),

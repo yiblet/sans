@@ -58,8 +58,9 @@ where
     F: FnMut(I1) -> I2,
 {
     type Next = MapInput<S::Next, F>;
+    type Return = S::Return;
 
-    fn init(self) -> Step<(O, Self::Next), <S::Next as Sans<I2, O>>::Return> {
+    fn init(self) -> Step<(O, Self::Next), Self::Return> {
         match self.coro.init() {
             Step::Yielded((o, next)) => Step::Yielded((
                 o,
@@ -141,8 +142,9 @@ where
     F: FnMut(O1) -> O2,
 {
     type Next = MapYield<S::Next, F, I, O1>;
+    type Return = S::Return;
 
-    fn init(self) -> Step<(O2, Self::Next), <S::Next as Sans<I, O1>>::Return> {
+    fn init(self) -> Step<(O2, Self::Next), Self::Return> {
         match self.coro.init() {
             Step::Yielded((o1, next)) => {
                 let mut f = self.f;
@@ -193,8 +195,7 @@ pub fn map_return<S, F>(f: F, coro: S) -> MapReturn<S, F> {
 /// This is used when applying return transformation to a coroutine that yields immediately.
 pub fn init_map_return<I, O, D1, D2, S, F>(f: F, coro: S) -> MapReturn<S, F>
 where
-    S: InitSans<I, O>,
-    S::Next: Sans<I, O, Return = D1>,
+    S: InitSans<I, O, Return = D1>,
     F: FnMut(D1) -> D2,
 {
     MapReturn { f, coro }
@@ -216,13 +217,13 @@ where
 
 impl<I, O, D1, D2, S, F> InitSans<I, O> for MapReturn<S, F>
 where
-    S: InitSans<I, O>,
-    S::Next: Sans<I, O, Return = D1>,
+    S: InitSans<I, O, Return = D1>,
     F: FnMut(D1) -> D2,
 {
     type Next = MapReturn<S::Next, F>;
+    type Return = D2;
 
-    fn init(self) -> Step<(O, Self::Next), D2> {
+    fn init(self) -> Step<(O, Self::Next), Self::Return> {
         match self.coro.init() {
             Step::Yielded((o, next)) => Step::Yielded((
                 o,

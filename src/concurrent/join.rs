@@ -36,7 +36,7 @@ use crate::{InitSans, Sans, Step};
 /// ```
 pub fn init_join<const N: usize, I, O, S, T>(rest: [T; N]) -> Join<N, S, O, S::Return>
 where
-    T: InitSans<I, O, Next = S>,
+    T: InitSans<I, O, Next = S, Return = S::Return>,
     S: Sans<I, O>,
 {
     let pollables = rest.map(|init_sans| init_poll(init_sans));
@@ -108,7 +108,7 @@ where
 /// Like [`init_join`] but accepts a dynamic number of coroutines at runtime.
 pub fn init_join_vec<I, O, S, T>(inits: Vec<T>) -> JoinVec<S, O, S::Return>
 where
-    T: InitSans<I, O, Next = S>,
+    T: InitSans<I, O, Next = S, Return = S::Return>,
     S: Sans<I, O>,
 {
     let len = inits.len();
@@ -347,13 +347,11 @@ where
     S: Sans<I, O>,
 {
     type Next = Self;
+    type Return = Result<[S::Return; N], JoinError>;
 
     fn init(
         mut self,
-    ) -> Step<
-        (PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Next),
-        <Self::Next as Sans<Poll<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>>::Return,
-    >{
+    ) -> Step<(PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Next), Self::Return> {
         match self.next(Poll::Poll) {
             Step::Yielded(o) => Step::Yielded((o, self)),
             Step::Complete(r) => Step::Complete(r),
@@ -488,13 +486,11 @@ where
     S: Sans<I, O>,
 {
     type Next = Self;
+    type Return = Result<Vec<S::Return>, JoinError>;
 
     fn init(
         mut self,
-    ) -> Step<
-        (PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Next),
-        <Self::Next as Sans<Poll<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>>::Return,
-    >{
+    ) -> Step<(PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Next), Self::Return> {
         match self.next(Poll::Poll) {
             Step::Yielded(o) => Step::Yielded((o, self)),
             Step::Complete(r) => Step::Complete(r),

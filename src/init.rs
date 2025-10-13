@@ -45,20 +45,20 @@ use crate::{
 /// assert_eq!(initial, 42);
 /// ```
 pub trait InitSans<I, O> {
-    type Next: Sans<I, O>;
+    type Return;
+    type Next: Sans<I, O, Return = Self::Return>;
 
     /// Execute the first coroutine.
     ///
     /// Returns `Yield((yield_value, continuation))` for normal execution,
     /// or `Done(done_value)` if the computation completes immediately.
     #[allow(clippy::type_complexity)]
-    fn init(self) -> Step<(O, Self::Next), <Self::Next as Sans<I, O>>::Return>;
+    fn init(self) -> Step<(O, Self::Next), Self::Return>;
 
     /// Chain with a coroutine.
     fn chain<R>(self, r: R) -> Chain<Self, R>
     where
-        Self: Sized,
-        Self::Next: Sans<I, O, Return = I>,
+        Self: Sized + InitSans<I, O, Return = I>,
         R: Sans<I, O>,
     {
         init_chain(self, r)
@@ -67,9 +67,8 @@ pub trait InitSans<I, O> {
     /// Chain with a function that executes once.
     fn chain_once<F>(self, f: F) -> Chain<Self, Once<F>>
     where
-        Self: Sized,
-        Self::Next: Sans<I, O, Return = I>,
-        F: FnOnce(<Self::Next as Sans<I, O>>::Return) -> O,
+        Self: Sized + InitSans<I, O, Return = I>,
+        F: FnOnce(Self::Return) -> O,
     {
         self.chain(once(f))
     }
@@ -77,9 +76,8 @@ pub trait InitSans<I, O> {
     /// Chain with a function that repeats indefinitely.
     fn chain_repeat<F>(self, f: F) -> Chain<Self, Repeat<F>>
     where
-        Self: Sized,
-        Self::Next: Sans<I, O, Return = I>,
-        F: FnMut(<Self::Next as Sans<I, O>>::Return) -> O,
+        Self: Sized + InitSans<I, O, Return = I>,
+        F: FnMut(Self::Return) -> O,
     {
         self.chain(repeat(f))
     }
@@ -106,7 +104,7 @@ pub trait InitSans<I, O> {
     fn map_done<D2, F>(self, f: F) -> MapReturn<Self, F>
     where
         Self: Sized,
-        F: FnMut(<Self::Next as Sans<I, O>>::Return) -> D2,
+        F: FnMut(Self::Return) -> D2,
     {
         init_map_return(f, self)
     }
@@ -125,7 +123,9 @@ where
     S: Sans<I, O>,
 {
     type Next = S;
-    fn init(self) -> Step<(O, S), S::Return> {
+    type Return = S::Return;
+
+    fn init(self) -> Step<(O, S), Self::Return> {
         Step::Yielded(self)
     }
 }
@@ -135,7 +135,9 @@ where
     S: Sans<I, O>,
 {
     type Next = S;
-    fn init(self) -> Step<(O, S), S::Return> {
+    type Return = S::Return;
+
+    fn init(self) -> Step<(O, S), Self::Return> {
         self
     }
 }
@@ -145,8 +147,9 @@ where
     C: InitSans<I, O>,
 {
     type Next = Option<C::Next>;
+    type Return = Option<C::Return>;
 
-    fn init(self) -> Step<(O, Self::Next), <Self::Next as Sans<I, O>>::Return> {
+    fn init(self) -> Step<(O, Self::Next), Self::Return> {
         match self {
             Some(c) => match c.init() {
                 Step::Yielded((o, next)) => Step::Yielded((o, Some(next))),
@@ -160,11 +163,12 @@ where
 impl<I, O, L, R> InitSans<I, O> for either::Either<L, R>
 where
     L: InitSans<I, O>,
-    R: InitSans<I, O>,
-    R::Next: Sans<I, O, Return = <L::Next as Sans<I, O>>::Return>,
+    R: InitSans<I, O, Return = L::Return>,
 {
     type Next = either::Either<L::Next, R::Next>;
-    fn init(self) -> Step<(O, Self::Next), <Self::Next as Sans<I, O>>::Return> {
+    type Return = L::Return;
+
+    fn init(self) -> Step<(O, Self::Next), Self::Return> {
         match self {
             either::Either::Left(l) => match l.init() {
                 Step::Yielded((o, next_l)) => Step::Yielded((o, either::Either::Left(next_l))),
@@ -200,13 +204,9 @@ mod tests {
 
     impl InitSans<&'static str, &'static str> for ImmediateFirstDone {
         type Next = Self;
+        type Return = &'static str;
 
-        fn init(
-            self,
-        ) -> Step<
-            (&'static str, Self::Next),
-            <Self::Next as Sans<&'static str, &'static str>>::Return,
-        > {
+        fn init(self) -> Step<(&'static str, Self::Next), Self::Return> {
             Step::Complete("left-done")
         }
     }

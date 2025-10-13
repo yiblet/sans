@@ -14,10 +14,9 @@ use std::future::Future;
 ///
 /// Executes the initial `InitSans` coroutine and continues driving the resulting
 /// coroutine until completion, calling the responder for each yield.
-pub fn handle_init_sync<S, I, O, R>(coro: S, mut responder: R) -> <S::Next as Sans<I, O>>::Return
+pub fn handle_init_sync<S, I, O, R>(coro: S, mut responder: R) -> S::Return
 where
     S: InitSans<I, O>,
-    S::Next: Sans<I, O>,
     R: FnMut(O) -> I,
 {
     match coro.init() {
@@ -80,13 +79,9 @@ where
 /// Async version of `handle_init_sync`.
 ///
 /// The responder function returns a future that produces the next input.
-pub async fn handle_init_async<S, I, O, R, Fut>(
-    coro: S,
-    mut responder: R,
-) -> <S::Next as Sans<I, O>>::Return
+pub async fn handle_init_async<S, I, O, R, Fut>(coro: S, mut responder: R) -> S::Return
 where
     S: InitSans<I, O>,
-    S::Next: Sans<I, O>,
     R: FnMut(O) -> Fut,
     Fut: Future<Output = I>,
 {
@@ -116,10 +111,9 @@ where
 /// let pipeline = init_once(10, |x: i32| x * 2).chain(once(|x: i32| x + 1));
 /// let result = handle(pipeline, |output| output + 5);
 /// ```
-pub fn handle<S, I, O, R>(coro: S, responder: R) -> <S::Next as Sans<I, O>>::Return
+pub fn handle<S, I, O, R>(coro: S, responder: R) -> S::Return
 where
     S: InitSans<I, O>,
-    S::Next: Sans<I, O>,
     R: FnMut(O) -> I,
 {
     handle_init_sync(coro, responder)
@@ -128,10 +122,9 @@ where
 /// Async version of `handle`.
 ///
 /// Works with responder functions that return futures.
-pub async fn handle_async<S, I, O, R, Fut>(coro: S, responder: R) -> <S::Next as Sans<I, O>>::Return
+pub async fn handle_async<S, I, O, R, Fut>(coro: S, responder: R) -> S::Return
 where
     S: InitSans<I, O>,
-    S::Next: Sans<I, O>,
     R: FnMut(O) -> Fut,
     Fut: Future<Output = I>,
 {

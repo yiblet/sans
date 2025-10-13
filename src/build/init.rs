@@ -26,7 +26,9 @@ where
     S: Sans<I, O>,
 {
     type Next = S;
-    fn init(self) -> Step<(O, S), S::Return> {
+    type Return = S::Return;
+
+    fn init(self) -> Step<(O, S), Self::Return> {
         Step::Yielded((self.0, self.1))
     }
 }

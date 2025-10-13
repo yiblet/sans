@@ -142,7 +142,7 @@ where
 {
     Uninit(S),
     Active { first: Option<O>, sans: S::Next },
-    Complete(<S::Next as Sans<(), O>>::Return),
+    Complete(S::Return),
     Invalid,
 }
 
@@ -174,7 +174,7 @@ where
     /// Consume the iterator and return the final value if complete.
     ///
     /// Returns `None` if the iterator hasn't completed yet.
-    pub fn into_return(self) -> Option<<S::Next as Sans<(), O>>::Return> {
+    pub fn into_return(self) -> Option<S::Return> {
         match self.state {
             InitSansIterState::Complete(ret) => Some(ret),
             _ => None,
@@ -182,7 +182,7 @@ where
     }
 
     /// Get a reference to the return value if complete.
-    pub fn return_value(&self) -> Option<&<S::Next as Sans<(), O>>::Return> {
+    pub fn return_value(&self) -> Option<&S::Return> {
         match &self.state {
             InitSansIterState::Complete(ret) => Some(ret),
             _ => None,
