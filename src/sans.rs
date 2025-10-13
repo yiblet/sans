@@ -17,9 +17,9 @@
 //! use sans::prelude::*;
 //!
 //! // Create a coroutine that processes one input then completes
-//! let mut stage = once(|x: i32| x * 2);
-//! assert_eq!(stage.next(5).unwrap_yielded(), 10);
-//! assert_eq!(stage.next(3).unwrap_complete(), 3);
+//! let mut coro = once(|x: i32| x * 2);
+//! assert_eq!(coro.next(5).unwrap_yielded(), 10);
+//! assert_eq!(coro.next(3).unwrap_complete(), 3);
 //! ```
 
 use std::{
@@ -45,9 +45,9 @@ use crate::{
 /// ```rust
 /// use sans::prelude::*;
 ///
-/// let mut stage = once(|x: i32| x * 2);
-/// assert_eq!(stage.next(5).unwrap_yielded(), 10);
-/// assert_eq!(stage.next(3).unwrap_complete(), 3); // return
+/// let mut coro = once(|x: i32| x * 2);
+/// assert_eq!(coro.next(5).unwrap_yielded(), 10);
+/// assert_eq!(coro.next(3).unwrap_complete(), 3); // return
 /// ```
 pub trait Sans<I, O> {
     /// Type of final result when computation completes
@@ -56,7 +56,7 @@ pub trait Sans<I, O> {
     /// Process input, returning `Yield` to continue or `Return` to complete.
     fn next(&mut self, input: I) -> Step<O, Self::Return>;
 
-    /// Chain with a coroutine created from this stage's return value.
+    /// Chain with a coroutine created from this coroutine's return value.
     ///
     /// The function `f` receives the return value and must produce an [`InitSans`].
     /// Use [`init()`](crate::build::init) to wrap a `Sans`:
@@ -64,7 +64,7 @@ pub trait Sans<I, O> {
     /// ```rust
     /// use sans::prelude::*;
     ///
-    /// let mut stage = once(|x: i32| x * 2)
+    /// let mut coro = once(|x: i32| x * 2)
     ///     .and_then(|val| init(val, repeat(move |x| x + val)));
     /// ```
     fn and_then<T, F>(self, f: F) -> AndThen<Self, T::Next, F>
@@ -229,30 +229,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_chain_switches_to_second_stage_after_first_done() {
-        let mut stage = once(|val: u32| val + 1).chain(repeat(|val: u32| val * 2));
+    fn test_chain_switches_to_second_coroutine_after_first_done() {
+        let mut coro = once(|val: u32| val + 1).chain(repeat(|val: u32| val * 2));
 
-        assert_eq!(stage.next(3).unwrap_yielded(), 4);
-        assert_eq!(stage.next(4).unwrap_yielded(), 8);
-        assert_eq!(stage.next(5).unwrap_yielded(), 10);
+        assert_eq!(coro.next(3).unwrap_yielded(), 4);
+        assert_eq!(coro.next(4).unwrap_yielded(), 8);
+        assert_eq!(coro.next(5).unwrap_yielded(), 10);
     }
 
     #[test]
-    fn test_chain_propagates_done_from_second_stage() {
-        let mut stage = chain(once(|val: u32| val + 1), once(|val: u32| val * 2));
+    fn test_chain_propagates_done_from_second_coroutine() {
+        let mut coro = chain(once(|val: u32| val + 1), once(|val: u32| val * 2));
 
-        assert_eq!(stage.next(2).unwrap_yielded(), 3);
-        assert_eq!(stage.next(3).unwrap_yielded(), 6);
-        assert_eq!(stage.next(4).unwrap_complete(), 4);
+        assert_eq!(coro.next(2).unwrap_yielded(), 3);
+        assert_eq!(coro.next(3).unwrap_yielded(), 6);
+        assert_eq!(coro.next(4).unwrap_complete(), 4);
     }
 
     #[test]
     fn test_map_done_applies_after_chain_completion() {
-        let mut stage = chain(once(|val: u32| val + 1), once(|val: u32| val * 2))
+        let mut coro = chain(once(|val: u32| val + 1), once(|val: u32| val * 2))
             .map_return(|done: u32| format!("resume={done}"));
 
-        assert_eq!(stage.next(5).unwrap_yielded(), 6);
-        assert_eq!(stage.next(6).unwrap_yielded(), 12);
-        assert_eq!(stage.next(7).unwrap_complete(), "resume=7".to_string());
+        assert_eq!(coro.next(5).unwrap_yielded(), 6);
+        assert_eq!(coro.next(6).unwrap_yielded(), 12);
+        assert_eq!(coro.next(7).unwrap_complete(), "resume=7".to_string());
     }
 }

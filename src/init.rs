@@ -16,8 +16,8 @@
 //! use sans::prelude::*;
 //!
 //! // Create a continuation with an initial value
-//! let stage = init_once(42, |x: i32| x + 1);
-//! let (initial, mut cont) = stage.init().unwrap_yielded();
+//! let coro = init_once(42, |x: i32| x + 1);
+//! let (initial, mut cont) = coro.init().unwrap_yielded();
 //! assert_eq!(initial, 42);
 //! assert_eq!(cont.next(10).unwrap_yielded(), 11);
 //! ```
@@ -34,20 +34,20 @@ use crate::{
 
 /// Computations that yield an initial value before processing input.
 ///
-/// Unlike `Sans`, `InitSans` stages can produce output immediately, making them ideal
+/// Unlike `Sans`, `InitSans` coroutines can produce output immediately, making them ideal
 /// for pipeline initialization or generators with seed values.
 ///
 /// ```rust
 /// use sans::prelude::*;
 ///
-/// let stage = init_once(42, |x: i32| x + 1);
-/// let (initial, mut cont) = stage.init().unwrap_yielded();
+/// let coro = init_once(42, |x: i32| x + 1);
+/// let (initial, mut cont) = coro.init().unwrap_yielded();
 /// assert_eq!(initial, 42);
 /// ```
 pub trait InitSans<I, O> {
     type Next: Sans<I, O>;
 
-    /// Execute the first stage.
+    /// Execute the first coroutine.
     ///
     /// Returns `Yield((yield_value, continuation))` for normal execution,
     /// or `Done(done_value)` if the computation completes immediately.
@@ -221,18 +221,18 @@ mod tests {
             output
         });
 
-        let (first_yield, mut stage) = initializer.chain(repeater).init().unwrap_yielded();
+        let (first_yield, mut coro) = initializer.chain(repeater).init().unwrap_yielded();
         assert_eq!(10, first_yield);
-        assert_eq!(13, stage.next(8).unwrap_yielded());
-        assert_eq!(16, stage.next(8).unwrap_yielded());
-        assert_eq!(24, stage.next(8).unwrap_yielded());
-        assert_eq!(32, stage.next(8).unwrap_yielded());
+        assert_eq!(13, coro.next(8).unwrap_yielded());
+        assert_eq!(16, coro.next(8).unwrap_yielded());
+        assert_eq!(24, coro.next(8).unwrap_yielded());
+        assert_eq!(32, coro.next(8).unwrap_yielded());
     }
 
     #[test]
     fn test_map_input_and_map_yield_pipeline() {
         let mut total = 0_i64;
-        let (initial_total, mut stage) = init_repeat(0_i64, move |delta: i64| {
+        let (initial_total, mut coro) = init_repeat(0_i64, move |delta: i64| {
             total += delta;
             total
         })
@@ -255,9 +255,9 @@ mod tests {
         .unwrap_yielded();
 
         assert_eq!("total=0", initial_total);
-        assert_eq!("total=5", stage.next("add 5").unwrap_yielded());
-        assert_eq!("total=2", stage.next("sub 3").unwrap_yielded());
-        assert_eq!("total=7", stage.next("add 5").unwrap_yielded());
+        assert_eq!("total=5", coro.next("add 5").unwrap_yielded());
+        assert_eq!("total=2", coro.next("sub 3").unwrap_yielded());
+        assert_eq!("total=7", coro.next("add 5").unwrap_yielded());
     }
 
     #[test]
@@ -267,38 +267,38 @@ mod tests {
         let finisher = once(|input: u32| input * 3);
 
         let first = initializer.chain(finisher);
-        let (first_value, mut stage) = first
+        let (first_value, mut coro) = first
             .map_yield(|resume: u32| (resume + 7) as i32)
             .map_done(|done: u32| done as i32 * 3)
             .init()
             .unwrap_yielded();
 
         assert_eq!(49, first_value);
-        assert_eq!(18, stage.next(10).unwrap_yielded());
-        assert_eq!(37, stage.next(10).unwrap_yielded());
-        assert_eq!(30i32, stage.next(10).unwrap_complete());
+        assert_eq!(18, coro.next(10).unwrap_yielded());
+        assert_eq!(37, coro.next(10).unwrap_yielded());
+        assert_eq!(30i32, coro.next(10).unwrap_complete());
     }
 
     #[test]
     fn test_either_first_right_branch_selected() {
         #[allow(clippy::type_complexity)]
-        let stage: either::Either<
+        let coro: either::Either<
             (i32, Repeat<fn(i32) -> i32>),
             (i32, Repeat<fn(i32) -> i32>),
         > = either::Either::Right(init_repeat(2_i32, add_three));
 
-        let (first_value, mut next_stage) = stage.init().unwrap_yielded();
+        let (first_value, mut next_coro) = coro.init().unwrap_yielded();
         assert_eq!(2, first_value);
-        assert_eq!(5, next_stage.next(2).unwrap_yielded());
-        assert_eq!(6, next_stage.next(3).unwrap_yielded());
+        assert_eq!(5, next_coro.next(2).unwrap_yielded());
+        assert_eq!(6, next_coro.next(3).unwrap_yielded());
     }
 
     #[test]
     fn test_either_first_left_done_returns_resume() {
-        let stage: either::Either<ImmediateFirstDone, ImmediateFirstDone> =
+        let coro: either::Either<ImmediateFirstDone, ImmediateFirstDone> =
             either::Either::Left(ImmediateFirstDone);
 
-        let resume = stage.init().unwrap_complete();
+        let resume = coro.init().unwrap_complete();
         assert_eq!("left-done", resume);
     }
 

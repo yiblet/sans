@@ -7,7 +7,7 @@
 
 sans is a coroutine combinators library for building composable, resumable computations in Rust. Build pipelines that yield, resume, and compose beautifully.
 
-**What are coroutine combinators?** Instead of writing complex state machines with explicit state tracking, you compose small, focused functions into pipelines. Each stage can yield intermediate results, maintain state, and pass control to the next stage. The result is code that's easier to write, test, and reuse - all with compile-time type safety and zero-cost abstractions.
+**What are coroutine combinators?** Instead of writing complex state machines with explicit state tracking, you compose small, focused functions into pipelines. Each coroutine can yield intermediate results, maintain state, and pass control to the next coroutine. The result is code that's easier to write, test, and reuse - all with compile-time type safety and zero-cost abstractions.
 
 <!-- toc -->
 
@@ -44,12 +44,12 @@ let calculator = init_repeat(0_i64, move |delta: i64| {
 .map_yield(|value: i64| format!("total={}", value));
 
 // Execute the pipeline
-let (initial, mut stage) = calculator.init().unwrap_yielded();
+let (initial, mut coro) = calculator.init().unwrap_yielded();
 println!("{}", initial);  // "total=0"
 
-println!("{}", stage.next("add 5").unwrap_yielded());   // "total=5"
-println!("{}", stage.next("sub 3").unwrap_yielded());   // "total=2"
-println!("{}", stage.next("add 10").unwrap_yielded());  // "total=12"
+println!("{}", coro.next("add 5").unwrap_yielded());   // "total=5"
+println!("{}", coro.next("sub 3").unwrap_yielded());   // "total=2"
+println!("{}", coro.next("add 10").unwrap_yielded());  // "total=12"
 ```
 
 Chained pipeline with transformation:
@@ -80,8 +80,8 @@ Build stateful, resumable pipelines for:
 - **Incremental Computation** - Pausable async workflows, cooperative multitasking
 
 **Key benefits:**
-- **Composable** - Build complex pipelines from simple, reusable stages
-- **Type-safe** - Compiler ensures stages compose correctly
+- **Composable** - Build complex pipelines from simple, reusable coroutines
+- **Type-safe** - Compiler ensures coroutines compose correctly
 - **Zero-cost** - No allocations in core combinators, stack-based state machines
 - **Safe** - `#![forbid(unsafe_code)]`, no manual state management bugs
 - **Concurrent** - Run multiple coroutines concurrently with `join`
@@ -106,7 +106,7 @@ use sans::prelude::*;
 **[Full API Documentation](https://docs.rs/sans)** - Complete reference for all types, traits, and functions
 
 **Key modules:**
-- `sans::build` - Create coroutine stages (`once`, `repeat`, `init_once`)
+- `sans::build` - Create coroutines (`once`, `repeat`, `init_once`)
 - `sans::compose` - Combine coroutines (`chain`, `map_input`, `map_yield`)
 - `sans::concurrent` - Concurrent execution (`join`, `poll`)
 - `sans::run` - Execute pipelines (`handle`, `handle_async`)

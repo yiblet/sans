@@ -5,20 +5,20 @@
 
 use crate::{InitSans, Sans, step::Step};
 
-/// A coroutine that runs one stage to completion, then uses its return value
-/// to create and run a second stage.
+/// A coroutine that runs one coroutine to completion, then uses its return value
+/// to create and run a second coroutine.
 ///
-/// This is similar to a monadic bind operation. The first stage runs until it
+/// This is similar to a monadic bind operation. The first coroutine runs until it
 /// completes, then its return value is passed to a function that produces the
-/// second stage (which must implement [`InitSans`]).
+/// second coroutine (which must implement [`InitSans`]).
 ///
 /// Created via the [`and_then`] function.
 ///
 /// # Type Parameters
 ///
-/// * `S1` - The type of the first stage
-/// * `S2` - The type of the second stage's continuation (after initialization)
-/// * `F` - The function type that creates the second stage from the first's return value
+/// * `S1` - The type of the first coroutine
+/// * `S2` - The type of the second coroutine's continuation (after initialization)
+/// * `F` - The function type that creates the second coroutine from the first's return value
 pub struct AndThen<S1, S2, F> {
     state: AndThenState<S1, S2, F>,
 }
@@ -69,10 +69,10 @@ where
     }
 }
 
-/// Chains two stages where the second stage is created from the first stage's return value.
+/// Chains two coroutines where the second coroutine is created from the first coroutine's return value.
 ///
-/// This is a monadic bind operation for coroutines. The first stage runs to completion,
-/// then its return value is passed to a function `f` that creates the second stage.
+/// This is a monadic bind operation for coroutines. The first coroutine runs to completion,
+/// then its return value is passed to a function `f` that creates the second coroutine.
 ///
 /// **Important:** The function `f` must return an [`InitSans`], not just a [`Sans`]. Use the
 /// [`init()`](crate::build::init) helper to wrap a `Sans` with an initial output:
@@ -81,7 +81,7 @@ where
 /// use sans::prelude::*;
 ///
 /// // Using init() makes the syntax cleaner
-/// let mut stage = once(|x: i32| x * 2)
+/// let mut coro = once(|x: i32| x * 2)
 ///     .and_then(|val| init(val * 10, repeat(move |x| x + val)));
 /// ```
 ///
@@ -90,12 +90,12 @@ where
 ///
 /// # Arguments
 ///
-/// * `l` - The first stage to run
-/// * `f` - A function that takes the first stage's return value and produces the second stage
+/// * `l` - The first coroutine to run
+/// * `f` - A function that takes the first coroutine's return value and produces the second coroutine
 ///
 /// # Returns
 ///
-/// An [`AndThen`] continuation that runs both stages in sequence.
+/// An [`AndThen`] continuation that runs both coroutines in sequence.
 ///
 /// # Examples
 ///
@@ -103,22 +103,22 @@ where
 /// use sans::prelude::*;
 /// use sans::compose::and_then;
 ///
-/// // First stage yields once, then completes with a return value
-/// // Second stage uses that return value to configure its behavior
-/// let mut stage = and_then(
+/// // First coro yields once, then completes with a return value
+/// // Second coro uses that return value to configure its behavior
+/// let mut coro = and_then(
 ///     once(|x: i32| x * 2),  // yields x*2, returns next input
 ///     |return_val| init(return_val * 10, repeat(move |y: i32| y + return_val)),
 /// );
 ///
-/// // First stage yields 5 * 2 = 10
-/// assert_eq!(stage.next(5).unwrap_yielded(), 10);
+/// // First coro yields 5 * 2 = 10
+/// assert_eq!(coro.next(5).unwrap_yielded(), 10);
 ///
-/// // First stage completes with return value = 7
-/// // Second stage initializes with (7*10, ...) and yields 70
-/// assert_eq!(stage.next(7).unwrap_yielded(), 70);
+/// // First coro completes with return value = 7
+/// // Second coro initializes with (7*10, ...) and yields 70
+/// assert_eq!(coro.next(7).unwrap_yielded(), 70);
 ///
-/// // Second stage continues: 3 + 7 = 10
-/// assert_eq!(stage.next(3).unwrap_yielded(), 10);
+/// // Second coro continues: 3 + 7 = 10
+/// assert_eq!(coro.next(3).unwrap_yielded(), 10);
 /// ```
 pub fn and_then<I, O, L, R, F>(l: L, f: F) -> AndThen<L, R::Next, F>
 where
@@ -134,8 +134,8 @@ where
 
 /// Run the first coroutine to completion, then feed its result to the second.
 ///
-/// The first stage's `Done` value becomes the input to the second stage.
-/// Both stages must yield the same type.
+/// The first coroutine's `Done` value becomes the input to the second coroutine.
+/// Both coroutines must yield the same type.
 pub fn chain<I, O, L, R>(l: L, r: R) -> Chain<L, R>
 where
     L: Sans<I, O, Return = I>,
@@ -144,9 +144,9 @@ where
     Chain(Some(l), r)
 }
 
-/// Create a chain from an InitSans stage and a coroutine.
+/// Create a chain from an InitSans coroutine and a coroutine.
 ///
-/// This is used when chaining an initial stage (that yields immediately) with a coroutine.
+/// This is used when chaining an initial coroutine (that yields immediately) with a coroutine.
 pub fn init_chain<I, O, L, R>(l: L, r: R) -> Chain<L, R>
 where
     L: InitSans<I, O>,
@@ -156,9 +156,9 @@ where
     Chain(Some(l), r)
 }
 
-/// Chains two stages sequentially.
+/// Chains two coroutines sequentially.
 ///
-/// Created via `chain()` or `first_chain()`. The first stage is dropped from memory
+/// Created via `chain()` or `first_chain()`. The first coroutine is dropped from memory
 /// once it completes to free resources.
 pub struct Chain<S1, S2>(Option<S1>, S2);
 
@@ -173,7 +173,7 @@ where
             Some(ref mut l) => match l.next(input) {
                 Step::Yielded(o) => Step::Yielded(o),
                 Step::Complete(a) => {
-                    self.0 = None; // we drop the old stage when it's done
+                    self.0 = None; // we drop the old coro when it's done
                     self.1.next(a)
                 }
             },
@@ -208,48 +208,48 @@ mod tests {
     use crate::build::{once, repeat};
 
     #[test]
-    fn test_chain_switches_to_second_stage_after_first_done() {
-        let mut stage = chain(once(|val: u32| val + 1), repeat(|val: u32| val * 2));
+    fn test_chain_switches_to_second_coroutine_after_first_done() {
+        let mut coro = chain(once(|val: u32| val + 1), repeat(|val: u32| val * 2));
 
-        assert_eq!(stage.next(3).unwrap_yielded(), 4);
-        assert_eq!(stage.next(4).unwrap_yielded(), 8);
-        assert_eq!(stage.next(5).unwrap_yielded(), 10);
+        assert_eq!(coro.next(3).unwrap_yielded(), 4);
+        assert_eq!(coro.next(4).unwrap_yielded(), 8);
+        assert_eq!(coro.next(5).unwrap_yielded(), 10);
     }
 
     #[test]
-    fn test_chain_propagates_done_from_second_stage() {
-        let mut stage = chain(once(|val: u32| val + 1), once(|val: u32| val * 2));
+    fn test_chain_propagates_done_from_second_coroutine() {
+        let mut coro = chain(once(|val: u32| val + 1), once(|val: u32| val * 2));
 
-        assert_eq!(stage.next(2).unwrap_yielded(), 3);
-        assert_eq!(stage.next(3).unwrap_yielded(), 6);
-        assert_eq!(stage.next(4).unwrap_complete(), 4);
+        assert_eq!(coro.next(2).unwrap_yielded(), 3);
+        assert_eq!(coro.next(3).unwrap_yielded(), 6);
+        assert_eq!(coro.next(4).unwrap_complete(), 4);
     }
 
     #[test]
     fn test_and_then_basic() {
-        // First stage yields once then completes with a computed value
-        // and_then uses the RETURN value of first stage to create second stage
-        let mut stage = and_then(
+        // First coroutine yields once then completes with a computed value
+        // and_then uses the RETURN value of first coroutine to create second coroutine
+        let mut coro = and_then(
             once(|x: i32| x * 2), // yields x*2, then completes with next input
             |return_val| (return_val * 10, repeat(move |y: i32| y + return_val)),
         );
 
         // First: 5 * 2 = 10 (yielded)
-        assert_eq!(stage.next(5).unwrap_yielded(), 10);
+        assert_eq!(coro.next(5).unwrap_yielded(), 10);
         // Second: once completes with return value = 7
-        // and_then creates second stage with return_val=7
-        // Second stage initializes: (7*10, ...) = (70, ...)
+        // and_then creates second coroutine with return_val=7
+        // Second coroutine initializes: (7*10, ...) = (70, ...)
         // Yields 70
-        assert_eq!(stage.next(7).unwrap_yielded(), 70);
-        // Second stage continues: 3 + 7 = 10
-        assert_eq!(stage.next(3).unwrap_yielded(), 10);
+        assert_eq!(coro.next(7).unwrap_yielded(), 70);
+        // Second coroutine continues: 3 + 7 = 10
+        assert_eq!(coro.next(3).unwrap_yielded(), 10);
         // 5 + 7 = 12
-        assert_eq!(stage.next(5).unwrap_yielded(), 12);
+        assert_eq!(coro.next(5).unwrap_yielded(), 12);
     }
 
     #[test]
-    fn test_and_then_first_stage_yields_multiple() {
-        // First stage yields twice before completing
+    fn test_and_then_first_coro_yields_multiple() {
+        // First coroutine yields twice before completing
         use crate::build::from_fn;
         let mut count = 0;
         let first = from_fn(move |x: i32| {
@@ -261,54 +261,54 @@ mod tests {
             }
         });
 
-        let mut stage = and_then(first, |final_count| {
+        let mut coro = and_then(first, |final_count| {
             (final_count * 100, once(move |x: i32| x + final_count))
         });
 
         // First yields
-        assert_eq!(stage.next(5).unwrap_yielded(), 5); // 5 * 1
-        assert_eq!(stage.next(5).unwrap_yielded(), 10); // 5 * 2
-        // Now first completes with count=3, second stage initializes with (300, ...)
-        assert_eq!(stage.next(0).unwrap_yielded(), 300); // Initial yield 3 * 100
-        // Second stage continues: 10 + 3 = 13
-        assert_eq!(stage.next(10).unwrap_yielded(), 13); // 10 + 3
-        // Second stage (once) completes
-        assert_eq!(stage.next(20).unwrap_complete(), 20);
+        assert_eq!(coro.next(5).unwrap_yielded(), 5); // 5 * 1
+        assert_eq!(coro.next(5).unwrap_yielded(), 10); // 5 * 2
+        // Now first completes with count=3, second coroutine initializes with (300, ...)
+        assert_eq!(coro.next(0).unwrap_yielded(), 300); // Initial yield 3 * 100
+        // Second coroutine continues: 10 + 3 = 13
+        assert_eq!(coro.next(10).unwrap_yielded(), 13); // 10 + 3
+        // Second coroutine (once) completes
+        assert_eq!(coro.next(20).unwrap_complete(), 20);
     }
 
     #[test]
     fn test_and_then_with_init_sans() {
-        // Second stage has initial yield
-        let mut stage = and_then(once(|x: i32| x + 1), |result| {
+        // Second coroutine has initial yield
+        let mut coro = and_then(once(|x: i32| x + 1), |result| {
             (result * 10, repeat(move |y: i32| y + result))
         });
 
-        // First stage: 5 + 1 = 6 (yielded)
-        assert_eq!(stage.next(5).unwrap_yielded(), 6);
-        // First stage completes with result = 8
-        // Second stage initializes with (8 * 10, ...) = (80, ...)
+        // First coroutine: 5 + 1 = 6 (yielded)
+        assert_eq!(coro.next(5).unwrap_yielded(), 6);
+        // First coroutine completes with result = 8
+        // Second coroutine initializes with (8 * 10, ...) = (80, ...)
         // Yields the initial value 80
-        assert_eq!(stage.next(8).unwrap_yielded(), 80);
+        assert_eq!(coro.next(8).unwrap_yielded(), 80);
         // Now the repeat continues: y + result = 3 + 8 = 11
-        assert_eq!(stage.next(3).unwrap_yielded(), 11);
+        assert_eq!(coro.next(3).unwrap_yielded(), 11);
     }
 
     #[test]
     fn test_and_then_completes_immediately() {
-        // First stage completes on first input, second stage yields once then completes
-        let mut stage = and_then(once(|x: i32| x * 2), |val| {
+        // First coroutine completes on first input, second coroutine yields once then completes
+        let mut coro = and_then(once(|x: i32| x * 2), |val| {
             (val + 100, once(move |x: i32| x + val))
         });
 
         // First: 5 * 2 = 10 (yielded)
-        assert_eq!(stage.next(5).unwrap_yielded(), 10);
+        assert_eq!(coro.next(5).unwrap_yielded(), 10);
         // First completes with val = 12
         // Second initializes with (12 + 100, once(...)) = (112, ...)
         // Yields 112
-        assert_eq!(stage.next(12).unwrap_yielded(), 112);
+        assert_eq!(coro.next(12).unwrap_yielded(), 112);
         // Second continues: 20 + 12 = 32
-        assert_eq!(stage.next(20).unwrap_yielded(), 32);
+        assert_eq!(coro.next(20).unwrap_yielded(), 32);
         // Second completes with 7
-        assert_eq!(stage.next(7).unwrap_complete(), 7);
+        assert_eq!(coro.next(7).unwrap_complete(), 7);
     }
 }

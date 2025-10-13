@@ -8,7 +8,7 @@
 //! - [`short_circuit`] - Short-circuits on the first `Err` in yielded values
 //! - [`ok_map`] - Maps `Ok` return values through a function that produces an [`InitSans`]
 //! - [`ok_and_then`] - Chains through a function that produces a fallible [`InitSans`]
-//! - [`ok_chain`] - Chains to another stage only if the first returns `Ok`
+//! - [`ok_chain`] - Chains to another coroutine only if the first returns `Ok`
 //! - [`flatten`] - Flattens nested `Result<Result<T, E>, E>` types
 //!
 //! # Extension Traits
@@ -23,10 +23,10 @@
 //! use sans::result::{short_circuit, TrySans};
 //!
 //! // Short-circuit on errors
-//! let stage = repeat(|x: i32| {
+//! let coro = repeat(|x: i32| {
 //!     if x < 0 { Err("negative") } else { Ok(x * 2) }
 //! });
-//! let mut sc = short_circuit(stage);
+//! let mut sc = short_circuit(coro);
 //!
 //! assert_eq!(sc.next(5).unwrap_yielded(), 10);
 //! assert_eq!(sc.next(-1).unwrap_complete(), Err("negative"));
@@ -39,7 +39,7 @@ use crate::{InitSans, Sans, step::Step};
 /// If any yield is `Err(e)`, immediately completes with `Err(e)`.
 /// Otherwise yields unwrapped `Ok` values and completes with `Ok(P)`.
 pub struct ShortCircuit<S, E> {
-    stage: S,
+    coro: S,
     _phantom: std::marker::PhantomData<E>,
 }
 
@@ -51,30 +51,30 @@ pub struct ShortCircuit<S, E> {
 /// use sans::prelude::*;
 /// use sans::result::short_circuit;
 ///
-/// let stage = repeat(|x: i32| {
+/// let coro = repeat(|x: i32| {
 ///     if x < 0 { Err("negative") } else { Ok(x * 2) }
 /// });
-/// let mut sc = short_circuit(stage);
+/// let mut sc = short_circuit(coro);
 ///
 /// assert_eq!(sc.next(5).unwrap_yielded(), 10);
 /// assert_eq!(sc.next(-1).unwrap_complete(), Err("negative"));
 /// ```
-pub fn short_circuit<S, E>(stage: S) -> ShortCircuit<S, E> {
+pub fn short_circuit<S, E>(coro: S) -> ShortCircuit<S, E> {
     ShortCircuit {
-        stage,
+        coro,
         _phantom: std::marker::PhantomData,
     }
 }
 
-/// Create a ShortCircuit from an InitSans stage.
+/// Create a ShortCircuit from an InitSans coroutine.
 ///
-/// This is used when applying short-circuit to a stage that yields immediately.
-pub fn init_short_circuit<I, O, E, S>(stage: S) -> ShortCircuit<S, E>
+/// This is used when applying short-circuit to a coroutine that yields immediately.
+pub fn init_short_circuit<I, O, E, S>(coro: S) -> ShortCircuit<S, E>
 where
     S: InitSans<I, Result<O, E>>,
 {
     ShortCircuit {
-        stage,
+        coro,
         _phantom: std::marker::PhantomData,
     }
 }
@@ -86,7 +86,7 @@ where
     type Return = Result<S::Return, E>;
 
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
-        match self.stage.next(input) {
+        match self.coro.next(input) {
             Step::Yielded(Ok(o)) => Step::Yielded(o),
             Step::Yielded(Err(e)) => Step::Complete(Err(e)),
             Step::Complete(p) => Step::Complete(Ok(p)),
@@ -101,11 +101,11 @@ where
     type Next = ShortCircuit<S::Next, E>;
 
     fn init(self) -> Step<(O, Self::Next), Result<<S::Next as Sans<I, Result<O, E>>>::Return, E>> {
-        match self.stage.init() {
+        match self.coro.init() {
             Step::Yielded((Ok(o), next)) => Step::Yielded((
                 o,
                 ShortCircuit {
-                    stage: next,
+                    coro: next,
                     _phantom: std::marker::PhantomData,
                 },
             )),
@@ -117,7 +117,7 @@ where
 
 /// Maps `Ok` values through a function that produces an `InitSans`.
 ///
-/// If the stage completes with `Err`, propagates the error.
+/// If the coroutine completes with `Err`, propagates the error.
 /// If it completes with `Ok(p)`, calls `f(p)` and wraps the result in `Ok`.
 pub struct OkMap<S, T, F> {
     state: OkMapState<S, T, F>,
@@ -139,7 +139,7 @@ enum OkMapState<S, T, F> {
 /// use sans::Step;
 ///
 /// let mut called = false;
-/// let stage = from_fn(move |x: i32| -> Step<i32, Result<i32, String>> {
+/// let coro = from_fn(move |x: i32| -> Step<i32, Result<i32, String>> {
 ///     if !called {
 ///         called = true;
 ///         Step::Yielded(x * 2)
@@ -150,16 +150,16 @@ enum OkMapState<S, T, F> {
 ///     }
 /// });
 ///
-/// let mut mapped = ok_map(stage, |val| init(val, repeat(move |x: i32| x + val)));
+/// let mut mapped = ok_map(coro, |val| init(val, repeat(move |x: i32| x + val)));
 ///
 /// // First input: 5 -> yields 10
 /// assert_eq!(mapped.next(5).unwrap_yielded(), 10);
-/// // Second input: completes with Ok(3), starts second stage with val=3
+/// // Second input: completes with Ok(3), starts second coro with val=3
 /// assert_eq!(mapped.next(3).unwrap_yielded(), 3);
-/// // Third input: second stage continues 7 + 3 = 10
+/// // Third input: second coro continues 7 + 3 = 10
 /// assert_eq!(mapped.next(7).unwrap_yielded(), 10);
 /// ```
-pub fn ok_map<I, O, P, E, S, T, F>(stage: S, f: F) -> OkMap<S, T::Next, F>
+pub fn ok_map<I, O, P, E, S, T, F>(coro: S, f: F) -> OkMap<S, T::Next, F>
 where
     S: Sans<I, O, Return = Result<P, E>>,
     T: InitSans<I, O>,
@@ -167,14 +167,14 @@ where
     F: FnOnce(P) -> T,
 {
     OkMap {
-        state: OkMapState::OnFirst(stage, Some(f)),
+        state: OkMapState::OnFirst(coro, Some(f)),
     }
 }
 
-/// Create an OkMap from an InitSans stage.
+/// Create an OkMap from an InitSans coroutine.
 ///
-/// This is used when applying ok_map to a stage that yields immediately.
-pub fn init_ok_map<I, O, P, E, S, T, F>(stage: S, f: F) -> OkMap<S, T::Next, F>
+/// This is used when applying ok_map to a coroutine that yields immediately.
+pub fn init_ok_map<I, O, P, E, S, T, F>(coro: S, f: F) -> OkMap<S, T::Next, F>
 where
     S: InitSans<I, O>,
     S::Next: Sans<I, O, Return = Result<P, E>>,
@@ -183,7 +183,7 @@ where
     F: FnOnce(P) -> T,
 {
     OkMap {
-        state: OkMapState::OnFirst(stage, Some(f)),
+        state: OkMapState::OnFirst(coro, Some(f)),
     }
 }
 
@@ -199,7 +199,7 @@ where
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
         match &mut self.state {
             OkMapState::OnSecond(next) => next.next(input).map_complete(Ok),
-            OkMapState::OnFirst(stage, f) => match stage.next(input) {
+            OkMapState::OnFirst(coro, f) => match coro.next(input) {
                 Step::Yielded(o) => Step::Yielded(o),
                 Step::Complete(Err(e)) => Step::Complete(Err(e)),
                 Step::Complete(Ok(p)) => {
@@ -231,11 +231,11 @@ where
     type Next = OkMap<S::Next, T::Next, F>;
 
     fn init(self) -> Step<(O, Self::Next), Result<<T::Next as Sans<I, O>>::Return, E>> {
-        let OkMapState::OnFirst(stage, f) = self.state else {
+        let OkMapState::OnFirst(coro, f) = self.state else {
             unreachable!("OkMap::init called on OnSecond state")
         };
 
-        match stage.init() {
+        match coro.init() {
             Step::Yielded((o, next)) => Step::Yielded((
                 o,
                 OkMap {
@@ -262,7 +262,7 @@ where
 
 /// Chains through a function that produces an `InitSans` with a `Result` return type.
 ///
-/// If the stage completes with `Err`, propagates the error without calling `f`.
+/// If the coroutine completes with `Err`, propagates the error without calling `f`.
 /// If it completes with `Ok(p)`, calls `f(p)` which itself can return `Result`.
 pub struct OkAndThen<S, T, F> {
     state: OkAndThenState<S, T, F>,
@@ -284,7 +284,7 @@ enum OkAndThenState<S, T, F> {
 /// use sans::Step;
 ///
 /// let mut first_called = false;
-/// let stage = from_fn(move |x: i32| -> Step<Result<i32, String>, Result<i32, String>> {
+/// let coro = from_fn(move |x: i32| -> Step<Result<i32, String>, Result<i32, String>> {
 ///     if !first_called {
 ///         first_called = true;
 ///         Step::Yielded(Ok(x * 2))
@@ -295,7 +295,7 @@ enum OkAndThenState<S, T, F> {
 ///     }
 /// });
 ///
-/// let mut chained = ok_and_then(stage, move |val| {
+/// let mut chained = ok_and_then(coro, move |val| {
 ///     let mut second_called = false;
 ///     init(Ok(val), from_fn(move |x: i32| -> Step<Result<i32, String>, Result<i32, String>> {
 ///         if !second_called {
@@ -309,12 +309,12 @@ enum OkAndThenState<S, T, F> {
 ///
 /// // First input: 5 -> yields Ok(10)
 /// assert_eq!(chained.next(5).unwrap_yielded(), Ok(10));
-/// // Second input: completes with Ok(3), starts second stage with val=3, yields Ok(3)
+/// // Second input: completes with Ok(3), starts second coro with val=3, yields Ok(3)
 /// assert_eq!(chained.next(3).unwrap_yielded(), Ok(3));
 /// // Third input: 7 -> yields Ok(7+3) = Ok(10)
 /// assert_eq!(chained.next(7).unwrap_yielded(), Ok(10));
 /// ```
-pub fn ok_and_then<I, O, P, Q, E, S, T, F>(stage: S, f: F) -> OkAndThen<S, T::Next, F>
+pub fn ok_and_then<I, O, P, Q, E, S, T, F>(coro: S, f: F) -> OkAndThen<S, T::Next, F>
 where
     S: Sans<I, O, Return = Result<P, E>>,
     T: InitSans<I, O>,
@@ -322,14 +322,14 @@ where
     F: FnOnce(P) -> T,
 {
     OkAndThen {
-        state: OkAndThenState::OnFirst(stage, Some(f)),
+        state: OkAndThenState::OnFirst(coro, Some(f)),
     }
 }
 
-/// Create an OkAndThen from an InitSans stage.
+/// Create an OkAndThen from an InitSans coroutine.
 ///
-/// This is used when applying ok_and_then to a stage that yields immediately.
-pub fn init_ok_and_then<I, O, P, Q, E, S, T, F>(stage: S, f: F) -> OkAndThen<S, T::Next, F>
+/// This is used when applying ok_and_then to a coroutine that yields immediately.
+pub fn init_ok_and_then<I, O, P, Q, E, S, T, F>(coro: S, f: F) -> OkAndThen<S, T::Next, F>
 where
     S: InitSans<I, O>,
     S::Next: Sans<I, O, Return = Result<P, E>>,
@@ -338,7 +338,7 @@ where
     F: FnOnce(P) -> T,
 {
     OkAndThen {
-        state: OkAndThenState::OnFirst(stage, Some(f)),
+        state: OkAndThenState::OnFirst(coro, Some(f)),
     }
 }
 
@@ -354,7 +354,7 @@ where
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
         match &mut self.state {
             OkAndThenState::OnSecond(next) => next.next(input),
-            OkAndThenState::OnFirst(stage, f) => match stage.next(input) {
+            OkAndThenState::OnFirst(coro, f) => match coro.next(input) {
                 Step::Yielded(o) => Step::Yielded(o),
                 Step::Complete(Err(e)) => Step::Complete(Err(e)),
                 Step::Complete(Ok(p)) => {
@@ -386,11 +386,11 @@ where
     type Next = OkAndThen<S::Next, T::Next, F>;
 
     fn init(self) -> Step<(O, Self::Next), Result<Q, E>> {
-        let OkAndThenState::OnFirst(stage, f) = self.state else {
+        let OkAndThenState::OnFirst(coro, f) = self.state else {
             unreachable!("OkAndThen::init called on OnSecond state")
         };
 
-        match stage.init() {
+        match coro.init() {
             Step::Yielded((o, next)) => Step::Yielded((
                 o,
                 OkAndThen {
@@ -415,15 +415,15 @@ where
     }
 }
 
-/// Chains to another stage only if the first returns `Ok`.
+/// Chains to another coroutine only if the first returns `Ok`.
 ///
-/// Converts the Ok value to the input type for the next stage.
+/// Converts the Ok value to the input type for the next coroutine.
 pub struct OkChain<S, R> {
-    stage: Option<S>,
+    coro: Option<S>,
     next: R,
 }
 
-/// Create a coroutine that chains to another stage on `Ok`.
+/// Create a coroutine that chains to another coroutine on `Ok`.
 ///
 /// # Examples
 ///
@@ -452,31 +452,31 @@ pub struct OkChain<S, R> {
 /// assert_eq!(chained.next(5).unwrap_yielded(), 10);
 /// // Second input: completes with Ok(3), chains with 3
 /// assert_eq!(chained.next(3).unwrap_yielded(), 4);
-/// // Now in second stage
+/// // Now in second coro
 /// assert_eq!(chained.next(10).unwrap_yielded(), 11);
 /// ```
-pub fn ok_chain<I, O, E, S, R>(stage: S, next: R) -> OkChain<S, R>
+pub fn ok_chain<I, O, E, S, R>(coro: S, next: R) -> OkChain<S, R>
 where
     S: Sans<I, O, Return = Result<I, E>>,
     R: Sans<I, O>,
 {
     OkChain {
-        stage: Some(stage),
+        coro: Some(coro),
         next,
     }
 }
 
-/// Create an OkChain from an InitSans stage.
+/// Create an OkChain from an InitSans coroutine.
 ///
-/// This is used when applying ok_chain to a stage that yields immediately.
-pub fn init_ok_chain<I, O, E, S, R>(stage: S, next: R) -> OkChain<S, R>
+/// This is used when applying ok_chain to a coroutine that yields immediately.
+pub fn init_ok_chain<I, O, E, S, R>(coro: S, next: R) -> OkChain<S, R>
 where
     S: InitSans<I, O>,
     S::Next: Sans<I, O, Return = Result<I, E>>,
     R: Sans<I, O>,
 {
     OkChain {
-        stage: Some(stage),
+        coro: Some(coro),
         next,
     }
 }
@@ -489,14 +489,14 @@ where
     type Return = Result<R::Return, E>;
 
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
-        if self.stage.is_none() {
+        if self.coro.is_none() {
             return self.next.next(input).map_complete(Ok);
         }
 
-        let mut stage = self.stage.take().expect("OkChain stage already consumed");
-        match stage.next(input) {
+        let mut coro = self.coro.take().expect("OkChain coro already consumed");
+        match coro.next(input) {
             Step::Yielded(o) => {
-                self.stage = Some(stage);
+                self.coro = Some(coro);
                 Step::Yielded(o)
             }
             Step::Complete(Err(e)) => Step::Complete(Err(e)),
@@ -518,15 +518,15 @@ where
 
     fn init(mut self) -> Step<(O, Self::Next), Result<R::Return, E>> {
         match self
-            .stage
+            .coro
             .take()
-            .expect("OkChain stage must be Some")
+            .expect("OkChain coro must be Some")
             .init()
         {
             Step::Yielded((o, next)) => Step::Yielded((
                 o,
                 OkChain {
-                    stage: Some(next),
+                    coro: Some(next),
                     next: self.next,
                 },
             )),
@@ -535,7 +535,7 @@ where
                 Step::Yielded(o) => Step::Yielded((
                     o,
                     OkChain {
-                        stage: None,
+                        coro: None,
                         next: self.next,
                     },
                 )),
@@ -549,7 +549,7 @@ where
 ///
 /// Converts `Result<Result<T, E>, E>` to `Result<T, E>`.
 pub struct Flatten<S> {
-    stage: S,
+    coro: S,
 }
 
 /// Create a coroutine that flattens nested `Result` types.
@@ -563,7 +563,7 @@ pub struct Flatten<S> {
 /// use sans::Step;
 ///
 /// let mut called = false;
-/// let stage = from_fn(move |x: i32| -> Step<Result<Result<i32, String>, String>, Result<Result<i32, String>, String>> {
+/// let coro = from_fn(move |x: i32| -> Step<Result<Result<i32, String>, String>, Result<Result<i32, String>, String>> {
 ///     if !called {
 ///         called = true;
 ///         if x > 0 {
@@ -576,25 +576,25 @@ pub struct Flatten<S> {
 ///     }
 /// });
 ///
-/// let mut flattened = flatten(stage);
+/// let mut flattened = flatten(coro);
 ///
 /// assert_eq!(flattened.next(5).unwrap_yielded(), Ok(Ok(10)));
 /// // Second call completes with flattened result
 /// assert_eq!(flattened.next(10).unwrap_complete(), Ok(10));
 /// ```
-pub fn flatten<S>(stage: S) -> Flatten<S> {
-    Flatten { stage }
+pub fn flatten<S>(coro: S) -> Flatten<S> {
+    Flatten { coro }
 }
 
-/// Create a Flatten from an InitSans stage.
+/// Create a Flatten from an InitSans coroutine.
 ///
-/// This is used when applying flatten to a stage that yields immediately.
-pub fn init_flatten<I, O, T, E, S>(stage: S) -> Flatten<S>
+/// This is used when applying flatten to a coroutine that yields immediately.
+pub fn init_flatten<I, O, T, E, S>(coro: S) -> Flatten<S>
 where
     S: InitSans<I, O>,
     S::Next: Sans<I, O, Return = Result<Result<T, E>, E>>,
 {
-    Flatten { stage }
+    Flatten { coro }
 }
 
 impl<I, O, T, E, S> Sans<I, O> for Flatten<S>
@@ -604,7 +604,7 @@ where
     type Return = Result<T, E>;
 
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
-        match self.stage.next(input) {
+        match self.coro.next(input) {
             Step::Yielded(o) => Step::Yielded(o),
             Step::Complete(Ok(Ok(t))) => Step::Complete(Ok(t)),
             Step::Complete(Ok(Err(e))) => Step::Complete(Err(e)),
@@ -621,8 +621,8 @@ where
     type Next = Flatten<S::Next>;
 
     fn init(self) -> Step<(O, Self::Next), Result<T, E>> {
-        match self.stage.init() {
-            Step::Yielded((o, next)) => Step::Yielded((o, Flatten { stage: next })),
+        match self.coro.init() {
+            Step::Yielded((o, next)) => Step::Yielded((o, Flatten { coro: next })),
             Step::Complete(Ok(Ok(t))) => Step::Complete(Ok(t)),
             Step::Complete(Ok(Err(e))) => Step::Complete(Err(e)),
             Step::Complete(Err(e)) => Step::Complete(Err(e)),
@@ -656,7 +656,7 @@ pub trait TrySans<I, O>: Sized {
         ok_and_then(self, f)
     }
 
-    /// Chains to another stage only if the first returns `Ok`.
+    /// Chains to another coroutine only if the first returns `Ok`.
     fn ok_chain<E, R>(self, next: R) -> OkChain<Self, R>
     where
         Self: Sans<I, O, Return = Result<I, E>>,
@@ -704,7 +704,7 @@ pub trait TryInitSans<I, O>: InitSans<I, O> + Sized {
         init_ok_and_then(self, f)
     }
 
-    /// Chains to another stage only if the first returns `Ok`.
+    /// Chains to another coroutine only if the first returns `Ok`.
     fn ok_chain<E, R>(self, next: R) -> OkChain<Self, R>
     where
         Self: InitSans<I, O>,
@@ -734,8 +734,8 @@ mod tests {
 
     #[test]
     fn test_short_circuit_propagates_ok_yields() {
-        let stage = repeat(|x: i32| if x < 0 { Err("negative") } else { Ok(x * 2) });
-        let mut sc = short_circuit(stage);
+        let coro = repeat(|x: i32| if x < 0 { Err("negative") } else { Ok(x * 2) });
+        let mut sc = short_circuit(coro);
 
         assert_eq!(sc.next(5).unwrap_yielded(), 10);
         assert_eq!(sc.next(3).unwrap_yielded(), 6);
@@ -744,8 +744,8 @@ mod tests {
 
     #[test]
     fn test_short_circuit_stops_on_err() {
-        let stage = repeat(|x: i32| if x < 0 { Err("negative") } else { Ok(x * 2) });
-        let mut sc = short_circuit(stage);
+        let coro = repeat(|x: i32| if x < 0 { Err("negative") } else { Ok(x * 2) });
+        let mut sc = short_circuit(coro);
 
         assert_eq!(sc.next(5).unwrap_yielded(), 10);
         assert_eq!(sc.next(-1).unwrap_complete(), Err("negative"));
@@ -753,8 +753,8 @@ mod tests {
 
     #[test]
     fn test_short_circuit_completes_with_ok() {
-        let stage = once(|x: i32| if x < 0 { Err("negative") } else { Ok(x * 2) });
-        let mut sc = short_circuit(stage);
+        let coro = once(|x: i32| if x < 0 { Err("negative") } else { Ok(x * 2) });
+        let mut sc = short_circuit(coro);
 
         assert_eq!(sc.next(5).unwrap_yielded(), 10);
         assert_eq!(sc.next(3).unwrap_complete(), Ok(3));
@@ -764,7 +764,7 @@ mod tests {
     fn test_ok_map_propagates_err() {
         use crate::build::from_fn;
         let mut called = false;
-        let stage = from_fn(move |x: i32| {
+        let coro = from_fn(move |x: i32| {
             if !called {
                 called = true;
                 Step::Yielded(x * 2)
@@ -775,7 +775,7 @@ mod tests {
             }
         });
 
-        let mut mapped = ok_map(stage, |val| init(val, repeat(move |x: i32| x + val)));
+        let mut mapped = ok_map(coro, |val| init(val, repeat(move |x: i32| x + val)));
 
         assert_eq!(mapped.next(5).unwrap_yielded(), 10);
         assert_eq!(
@@ -788,7 +788,7 @@ mod tests {
     fn test_ok_map_chains_on_ok() {
         use crate::build::from_fn;
         let mut called = false;
-        let stage = from_fn(move |x: i32| -> Step<i32, Result<i32, String>> {
+        let coro = from_fn(move |x: i32| -> Step<i32, Result<i32, String>> {
             if !called {
                 called = true;
                 Step::Yielded(x * 2)
@@ -797,7 +797,7 @@ mod tests {
             }
         });
 
-        let mut mapped = ok_map(stage, |val| init(val, repeat(move |x: i32| x + val)));
+        let mut mapped = ok_map(coro, |val| init(val, repeat(move |x: i32| x + val)));
 
         assert_eq!(mapped.next(5).unwrap_yielded(), 10);
         assert_eq!(mapped.next(3).unwrap_yielded(), 3); // initial value from init
@@ -808,7 +808,7 @@ mod tests {
     fn test_ok_and_then_propagates_err_from_first() {
         use crate::build::from_fn;
         let mut called = false;
-        let stage = from_fn(
+        let coro = from_fn(
             move |x: i32| -> Step<Result<i32, String>, Result<i32, String>> {
                 if !called {
                     called = true;
@@ -821,7 +821,7 @@ mod tests {
             },
         );
 
-        let mut chained = ok_and_then(stage, |val| {
+        let mut chained = ok_and_then(coro, |val| {
             init(
                 Ok(val),
                 from_fn(
@@ -843,7 +843,7 @@ mod tests {
     fn test_ok_and_then_chains_and_propagates_err_from_second() {
         use crate::build::from_fn;
         let mut first_called = false;
-        let stage = from_fn(
+        let coro = from_fn(
             move |x: i32| -> Step<Result<i32, String>, Result<i32, String>> {
                 if !first_called {
                     first_called = true;
@@ -854,7 +854,7 @@ mod tests {
             },
         );
 
-        let mut chained = ok_and_then(stage, |val| {
+        let mut chained = ok_and_then(coro, |val| {
             init(
                 Ok(val),
                 from_fn(
@@ -882,7 +882,7 @@ mod tests {
     fn test_ok_and_then_both_ok() {
         use crate::build::from_fn;
         let mut first_called = false;
-        let stage = from_fn(
+        let coro = from_fn(
             move |x: i32| -> Step<Result<i32, String>, Result<i32, String>> {
                 if !first_called {
                     first_called = true;
@@ -893,7 +893,7 @@ mod tests {
             },
         );
 
-        let mut chained = ok_and_then(stage, |val| {
+        let mut chained = ok_and_then(coro, |val| {
             let mut second_called = false;
             init(
                 Ok(val),
@@ -966,7 +966,7 @@ mod tests {
     fn test_flatten_outer_err() {
         use crate::build::from_fn;
         let mut called = false;
-        let stage = from_fn(move |x: i32| {
+        let coro = from_fn(move |x: i32| {
             if !called {
                 called = true;
                 Step::Yielded(x * 2)
@@ -977,7 +977,7 @@ mod tests {
             }
         });
 
-        let mut flattened = flatten(stage);
+        let mut flattened = flatten(coro);
 
         assert_eq!(flattened.next(5).unwrap_yielded(), 10);
         assert_eq!(
@@ -990,7 +990,7 @@ mod tests {
     fn test_flatten_inner_err() {
         use crate::build::from_fn;
         let mut called = false;
-        let stage = from_fn(move |x: i32| {
+        let coro = from_fn(move |x: i32| {
             if !called {
                 called = true;
                 Step::Yielded(x * 2)
@@ -1005,7 +1005,7 @@ mod tests {
             }
         });
 
-        let mut flattened = flatten(stage);
+        let mut flattened = flatten(coro);
 
         assert_eq!(flattened.next(5).unwrap_yielded(), 10);
         assert_eq!(
@@ -1018,7 +1018,7 @@ mod tests {
     fn test_flatten_both_ok() {
         use crate::build::from_fn;
         let mut called = false;
-        let stage = from_fn(move |x: i32| {
+        let coro = from_fn(move |x: i32| {
             if !called {
                 called = true;
                 Step::Yielded(x * 2)
@@ -1033,7 +1033,7 @@ mod tests {
             }
         });
 
-        let mut flattened = flatten(stage);
+        let mut flattened = flatten(coro);
 
         assert_eq!(flattened.next(5).unwrap_yielded(), 10);
         assert_eq!(flattened.next(10).unwrap_complete(), Ok(10));
@@ -1043,22 +1043,22 @@ mod tests {
 
     #[test]
     fn test_short_circuit_init_yields_ok() {
-        let init_stage = init(
+        let init_coro = init(
             Ok(42),
             repeat(|x: i32| if x < 0 { Err("negative") } else { Ok(x * 2) }),
         );
-        let sc = short_circuit(init_stage);
+        let sc = short_circuit(init_coro);
 
-        let (initial, mut stage) = sc.init().unwrap_yielded();
+        let (initial, mut coro) = sc.init().unwrap_yielded();
         assert_eq!(initial, 42);
-        assert_eq!(stage.next(5).unwrap_yielded(), 10);
-        assert_eq!(stage.next(3).unwrap_yielded(), 6);
+        assert_eq!(coro.next(5).unwrap_yielded(), 10);
+        assert_eq!(coro.next(3).unwrap_yielded(), 6);
     }
 
     #[test]
     fn test_short_circuit_init_yields_err() {
-        let init_stage = init(Err("initial error"), repeat(|x: i32| Ok(x * 2)));
-        let sc = short_circuit(init_stage);
+        let init_coro = init(Err("initial error"), repeat(|x: i32| Ok(x * 2)));
+        let sc = short_circuit(init_coro);
 
         assert_eq!(sc.init().unwrap_complete(), Err("initial error"));
     }
@@ -1066,20 +1066,20 @@ mod tests {
     #[test]
     fn test_short_circuit_init_completes_immediately() {
         use crate::build::from_fn;
-        let stage = from_fn(|_: i32| Step::Complete::<Result<i32, &str>, i32>(100));
-        let init_stage = (Ok(42), stage);
-        let sc = short_circuit(init_stage);
+        let coro = from_fn(|_: i32| Step::Complete::<Result<i32, &str>, i32>(100));
+        let init_coro = (Ok(42), coro);
+        let sc = short_circuit(init_coro);
 
-        let (initial, mut stage) = sc.init().unwrap_yielded();
+        let (initial, mut coro) = sc.init().unwrap_yielded();
         assert_eq!(initial, 42);
-        assert_eq!(stage.next(0).unwrap_complete(), Ok(100));
+        assert_eq!(coro.next(0).unwrap_complete(), Ok(100));
     }
 
     #[test]
     fn test_ok_map_init_first_yields() {
         use crate::build::from_fn;
         let mut called = false;
-        let first_stage = from_fn(move |x: i32| -> Step<i32, Result<i32, &str>> {
+        let first_coro = from_fn(move |x: i32| -> Step<i32, Result<i32, &str>> {
             if !called {
                 called = true;
                 Step::Yielded(x * 2)
@@ -1087,7 +1087,7 @@ mod tests {
                 Step::Complete(Ok(x))
             }
         });
-        let init_first = (10, first_stage);
+        let init_first = (10, first_coro);
         let mapped = OkMap {
             state: OkMapState::OnFirst(
                 init_first,
@@ -1095,17 +1095,17 @@ mod tests {
             ),
         };
 
-        let (initial, mut stage) = mapped.init().unwrap_yielded();
+        let (initial, mut coro) = mapped.init().unwrap_yielded();
         assert_eq!(initial, 10);
 
-        // First stage continues and yields 5*2=10
-        assert_eq!(stage.next(5).unwrap_yielded(), 10);
+        // First coroutine continues and yields 5*2=10
+        assert_eq!(coro.next(5).unwrap_yielded(), 10);
 
-        // First completes with Ok(0), second stage starts with val=0
-        assert_eq!(stage.next(0).unwrap_yielded(), 0);
+        // First completes with Ok(0), second coroutine starts with val=0
+        assert_eq!(coro.next(0).unwrap_yielded(), 0);
 
-        // Second stage continues: 3 + 0
-        assert_eq!(stage.next(3).unwrap_yielded(), 3);
+        // Second coroutine continues: 3 + 0
+        assert_eq!(coro.next(3).unwrap_yielded(), 3);
     }
 
     #[test]
@@ -1122,14 +1122,14 @@ mod tests {
             ),
         };
 
-        let (initial, mut stage) = mapped.init().unwrap_yielded();
+        let (initial, mut coro) = mapped.init().unwrap_yielded();
         assert_eq!(initial, 10);
 
-        // First completes with Ok(20), second stage inits with (40, ...)
-        assert_eq!(stage.next(0).unwrap_yielded(), 40);
+        // First completes with Ok(20), second coroutine inits with (40, ...)
+        assert_eq!(coro.next(0).unwrap_yielded(), 40);
 
-        // Second stage continues: 5 + 20
-        assert_eq!(stage.next(5).unwrap_yielded(), 25);
+        // Second coroutine continues: 5 + 20
+        assert_eq!(coro.next(5).unwrap_yielded(), 25);
     }
 
     #[test]
@@ -1143,17 +1143,17 @@ mod tests {
             state: OkMapState::OnFirst(first, Some(|val| init(val, repeat(move |x: i32| x + val)))),
         };
 
-        let (initial, mut stage) = mapped.init().unwrap_yielded();
+        let (initial, mut coro) = mapped.init().unwrap_yielded();
         assert_eq!(initial, 10);
 
-        assert_eq!(stage.next(0).unwrap_complete(), Err("error"));
+        assert_eq!(coro.next(0).unwrap_complete(), Err("error"));
     }
 
     #[test]
     fn test_ok_and_then_init_first_yields() {
         use crate::build::from_fn;
         let mut called = false;
-        let first_stage = from_fn(
+        let first_coro = from_fn(
             move |x: i32| -> Step<Result<i32, &str>, Result<i32, &str>> {
                 if !called {
                     called = true;
@@ -1163,7 +1163,7 @@ mod tests {
                 }
             },
         );
-        let first = (Ok(10), first_stage);
+        let first = (Ok(10), first_coro);
         let chained = OkAndThen {
             state: OkAndThenState::OnFirst(
                 first,
@@ -1180,17 +1180,17 @@ mod tests {
             ),
         };
 
-        let (initial, mut stage) = chained.init().unwrap_yielded();
+        let (initial, mut coro) = chained.init().unwrap_yielded();
         assert_eq!(initial, Ok(10));
 
-        // First stage continues and yields 5*2=10
-        assert_eq!(stage.next(5).unwrap_yielded(), Ok(10));
+        // First coroutine continues and yields 5*2=10
+        assert_eq!(coro.next(5).unwrap_yielded(), Ok(10));
 
-        // First completes with Ok(0), second stage starts with Ok(0)
-        assert_eq!(stage.next(0).unwrap_yielded(), Ok(0));
+        // First completes with Ok(0), second coroutine starts with Ok(0)
+        assert_eq!(coro.next(0).unwrap_yielded(), Ok(0));
 
-        // Second stage continues: 3 + 0
-        assert_eq!(stage.next(3).unwrap_yielded(), Ok(3));
+        // Second coroutine continues: 3 + 0
+        assert_eq!(coro.next(3).unwrap_yielded(), Ok(3));
     }
 
     #[test]
@@ -1216,14 +1216,14 @@ mod tests {
             ),
         };
 
-        let (initial, mut stage) = chained.init().unwrap_yielded();
+        let (initial, mut coro) = chained.init().unwrap_yielded();
         assert_eq!(initial, Ok(10));
 
         // First completes with Ok(20), second inits with Ok(40)
-        assert_eq!(stage.next(0).unwrap_yielded(), Ok(40));
+        assert_eq!(coro.next(0).unwrap_yielded(), Ok(40));
 
-        // Second stage continues: 5 + 20
-        assert_eq!(stage.next(5).unwrap_yielded(), Ok(25));
+        // Second coroutine continues: 5 + 20
+        assert_eq!(coro.next(5).unwrap_yielded(), Ok(25));
     }
 
     #[test]
@@ -1249,17 +1249,17 @@ mod tests {
             ),
         };
 
-        let (initial, mut stage) = chained.init().unwrap_yielded();
+        let (initial, mut coro) = chained.init().unwrap_yielded();
         assert_eq!(initial, Ok(10));
 
-        assert_eq!(stage.next(0).unwrap_complete(), Err("error"));
+        assert_eq!(coro.next(0).unwrap_complete(), Err("error"));
     }
 
     #[test]
     fn test_ok_chain_init_first_yields() {
         use crate::build::from_fn;
         let mut called = false;
-        let first_stage = from_fn(move |x: i32| -> Step<i32, Result<i32, &str>> {
+        let first_coro = from_fn(move |x: i32| -> Step<i32, Result<i32, &str>> {
             if !called {
                 called = true;
                 Step::Yielded(x * 2)
@@ -1267,21 +1267,21 @@ mod tests {
                 Step::Complete(Ok(x))
             }
         });
-        let first = (10, first_stage);
+        let first = (10, first_coro);
         let second = repeat(|x: i32| x + 1);
         let chained = OkChain {
-            stage: Some(first),
+            coro: Some(first),
             next: second,
         };
 
-        let (initial, mut stage) = chained.init().unwrap_yielded();
+        let (initial, mut coro) = chained.init().unwrap_yielded();
         assert_eq!(initial, 10);
 
-        // First stage continues and yields 5*2=10
-        assert_eq!(stage.next(5).unwrap_yielded(), 10);
+        // First coroutine continues and yields 5*2=10
+        assert_eq!(coro.next(5).unwrap_yielded(), 10);
 
-        // First completes with Ok(0), second stage starts with 0
-        assert_eq!(stage.next(0).unwrap_yielded(), 1);
+        // First completes with Ok(0), second coroutine starts with 0
+        assert_eq!(coro.next(0).unwrap_yielded(), 1);
     }
 
     #[test]
@@ -1293,16 +1293,16 @@ mod tests {
         );
         let second = repeat(|x: i32| x + 1);
         let chained = OkChain {
-            stage: Some(first),
+            coro: Some(first),
             next: second,
         };
 
-        let (initial, mut stage) = chained.init().unwrap_yielded();
+        let (initial, mut coro) = chained.init().unwrap_yielded();
         assert_eq!(initial, 10);
 
         // First completes with Ok(20), second starts with 20
-        assert_eq!(stage.next(0).unwrap_yielded(), 21);
-        assert_eq!(stage.next(50).unwrap_yielded(), 51);
+        assert_eq!(coro.next(0).unwrap_yielded(), 21);
+        assert_eq!(coro.next(50).unwrap_yielded(), 51);
     }
 
     #[test]
@@ -1314,14 +1314,14 @@ mod tests {
         );
         let second = repeat(|x: i32| x + 1);
         let chained = OkChain {
-            stage: Some(first),
+            coro: Some(first),
             next: second,
         };
 
-        let (initial, mut stage) = chained.init().unwrap_yielded();
+        let (initial, mut coro) = chained.init().unwrap_yielded();
         assert_eq!(initial, 10);
 
-        assert_eq!(stage.next(0).unwrap_complete(), Err("error"));
+        assert_eq!(coro.next(0).unwrap_complete(), Err("error"));
     }
 
     #[test]
@@ -1333,26 +1333,26 @@ mod tests {
         );
         let second = from_fn(|x: i32| Step::Complete(x * 2));
         let chained = OkChain {
-            stage: Some(first),
+            coro: Some(first),
             next: second,
         };
 
-        let (initial, mut stage) = chained.init().unwrap_yielded();
+        let (initial, mut coro) = chained.init().unwrap_yielded();
         assert_eq!(initial, 10);
 
         // First completes with Ok(20), second completes with 40
-        assert_eq!(stage.next(0).unwrap_complete(), Ok(40));
+        assert_eq!(coro.next(0).unwrap_complete(), Ok(40));
     }
 
     #[test]
     fn test_flatten_init_yields_outer_err() {
         use crate::build::from_fn;
-        let stage = from_fn(|_: i32| {
+        let coro = from_fn(|_: i32| {
             Step::Complete::<Result<Result<i32, &str>, &str>, Result<Result<i32, &str>, &str>>(
                 Err::<Result<i32, &str>, &str>("outer error"),
             )
         });
-        let mut flat = flatten(stage);
+        let mut flat = flatten(coro);
 
         assert_eq!(flat.next(0).unwrap_complete(), Err("outer error"));
     }
@@ -1360,12 +1360,12 @@ mod tests {
     #[test]
     fn test_flatten_init_yields_inner_err() {
         use crate::build::from_fn;
-        let stage = from_fn(|_: i32| {
+        let coro = from_fn(|_: i32| {
             Step::Complete::<Result<Result<i32, &str>, &str>, Result<Result<i32, &str>, &str>>(Ok(
                 Err::<i32, &str>("inner error"),
             ))
         });
-        let mut flat = flatten(stage);
+        let mut flat = flatten(coro);
 
         assert_eq!(flat.next(0).unwrap_complete(), Err("inner error"));
     }
@@ -1373,49 +1373,49 @@ mod tests {
     #[test]
     fn test_flatten_init_completes_ok_ok() {
         use crate::build::from_fn;
-        let stage = from_fn(|_: i32| {
+        let coro = from_fn(|_: i32| {
             Step::Complete::<Result<Result<i32, &str>, &str>, Result<Result<i32, &str>, &str>>(Ok(
                 Ok::<i32, &str>(100),
             ))
         });
-        let init_stage = (Ok(Ok::<i32, &str>(42)), stage);
-        let flat = flatten(init_stage);
+        let init_coro = (Ok(Ok::<i32, &str>(42)), coro);
+        let flat = flatten(init_coro);
 
-        let (initial, mut stage) = flat.init().unwrap_yielded();
+        let (initial, mut coro) = flat.init().unwrap_yielded();
         assert_eq!(initial, Ok(Ok(42)));
-        assert_eq!(stage.next(0).unwrap_complete(), Ok(100));
+        assert_eq!(coro.next(0).unwrap_complete(), Ok(100));
     }
 
     #[test]
     fn test_flatten_init_completes_ok_err() {
         use crate::build::from_fn;
-        let stage = from_fn(|_: i32| {
+        let coro = from_fn(|_: i32| {
             Step::Complete::<Result<Result<i32, &str>, &str>, Result<Result<i32, &str>, &str>>(Ok(
                 Err::<i32, &str>("inner error"),
             ))
         });
-        let init_stage = (Ok(Ok::<i32, &str>(42)), stage);
-        let flat = flatten(init_stage);
+        let init_coro = (Ok(Ok::<i32, &str>(42)), coro);
+        let flat = flatten(init_coro);
 
-        let (initial, mut stage) = flat.init().unwrap_yielded();
+        let (initial, mut coro) = flat.init().unwrap_yielded();
         assert_eq!(initial, Ok(Ok(42)));
-        assert_eq!(stage.next(0).unwrap_complete(), Err("inner error"));
+        assert_eq!(coro.next(0).unwrap_complete(), Err("inner error"));
     }
 
     #[test]
     fn test_flatten_init_completes_err() {
         use crate::build::from_fn;
-        let stage = from_fn(|_: i32| {
+        let coro = from_fn(|_: i32| {
             Step::Complete::<Result<Result<i32, &str>, &str>, Result<Result<i32, &str>, &str>>(
                 Err::<Result<i32, &str>, &str>("outer error"),
             )
         });
-        let init_stage = (Ok::<Result<i32, &str>, &str>(Ok::<i32, &str>(42)), stage);
-        let flat = flatten(init_stage);
+        let init_coro = (Ok::<Result<i32, &str>, &str>(Ok::<i32, &str>(42)), coro);
+        let flat = flatten(init_coro);
 
-        let (initial, mut stage) = flat.init().unwrap_yielded();
+        let (initial, mut coro) = flat.init().unwrap_yielded();
         assert_eq!(initial, Ok(Ok(42)));
-        assert_eq!(stage.next(0).unwrap_complete(), Err("outer error"));
+        assert_eq!(coro.next(0).unwrap_complete(), Err("outer error"));
     }
 
     // Extension trait tests
@@ -1426,7 +1426,7 @@ mod tests {
         use crate::result::TrySans;
 
         let mut called = false;
-        let stage = from_fn(move |x: i32| -> Step<i32, Result<i32, &str>> {
+        let coro = from_fn(move |x: i32| -> Step<i32, Result<i32, &str>> {
             if !called {
                 called = true;
                 Step::Yielded(x * 2)
@@ -1435,7 +1435,7 @@ mod tests {
             }
         });
 
-        let mut mapped = stage.ok_map(|val| init(val, repeat(move |x: i32| x + val)));
+        let mut mapped = coro.ok_map(|val| init(val, repeat(move |x: i32| x + val)));
 
         assert_eq!(mapped.next(5).unwrap_yielded(), 10);
         assert_eq!(mapped.next(3).unwrap_yielded(), 3);
@@ -1448,7 +1448,7 @@ mod tests {
         use crate::result::TrySans;
 
         let mut called = false;
-        let stage = from_fn(
+        let coro = from_fn(
             move |x: i32| -> Step<Result<i32, &str>, Result<i32, &str>> {
                 if !called {
                     called = true;
@@ -1459,7 +1459,7 @@ mod tests {
             },
         );
 
-        let mut chained = stage.ok_and_then(|val| {
+        let mut chained = coro.ok_and_then(|val| {
             let mut inner_called = false;
             init(
                 Ok(val),
@@ -1511,7 +1511,7 @@ mod tests {
 
         let mut called = false;
         #[allow(clippy::type_complexity)]
-        let stage = from_fn(move |x: i32| -> Step<
+        let coro = from_fn(move |x: i32| -> Step<
             Result<Result<i32, &str>, &str>,
             Result<Result<i32, &str>, &str>,
         > {
@@ -1523,7 +1523,7 @@ mod tests {
             }
         });
 
-        let mut flattened = stage.flatten();
+        let mut flattened = coro.flatten();
 
         assert_eq!(flattened.next(5).unwrap_yielded(), Ok(Ok(10)));
         assert_eq!(flattened.next(10).unwrap_complete(), Ok(10));
@@ -1535,7 +1535,7 @@ mod tests {
         use crate::result::TryInitSans;
 
         let mut called = false;
-        let first_stage = from_fn(move |x: i32| -> Step<i32, Result<i32, &str>> {
+        let first_coro = from_fn(move |x: i32| -> Step<i32, Result<i32, &str>> {
             if !called {
                 called = true;
                 Step::Yielded(x * 2)
@@ -1543,15 +1543,15 @@ mod tests {
                 Step::Complete(Ok(x))
             }
         });
-        let init_first = (10, first_stage);
+        let init_first = (10, first_coro);
         let mapped = init_first.ok_map(|val| init(val, repeat(move |x: i32| x + val)));
 
-        let (initial, mut stage) = mapped.init().unwrap_yielded();
+        let (initial, mut coro) = mapped.init().unwrap_yielded();
         assert_eq!(initial, 10);
 
-        assert_eq!(stage.next(5).unwrap_yielded(), 10);
-        assert_eq!(stage.next(0).unwrap_yielded(), 0);
-        assert_eq!(stage.next(3).unwrap_yielded(), 3);
+        assert_eq!(coro.next(5).unwrap_yielded(), 10);
+        assert_eq!(coro.next(0).unwrap_yielded(), 0);
+        assert_eq!(coro.next(3).unwrap_yielded(), 3);
     }
 
     #[test]
@@ -1559,16 +1559,16 @@ mod tests {
         use crate::build::from_fn;
         use crate::result::TryInitSans;
 
-        let stage = from_fn(|_: i32| {
+        let coro = from_fn(|_: i32| {
             Step::Complete::<Result<Result<i32, &str>, &str>, Result<Result<i32, &str>, &str>>(Ok(
                 Ok::<i32, &str>(100),
             ))
         });
-        let init_stage = (Ok(Ok::<i32, &str>(42)), stage);
-        let flat = init_stage.flatten();
+        let init_coro = (Ok(Ok::<i32, &str>(42)), coro);
+        let flat = init_coro.flatten();
 
-        let (initial, mut stage) = flat.init().unwrap_yielded();
+        let (initial, mut coro) = flat.init().unwrap_yielded();
         assert_eq!(initial, Ok(Ok(42)));
-        assert_eq!(stage.next(0).unwrap_complete(), Ok(100));
+        assert_eq!(coro.next(0).unwrap_complete(), Ok(100));
     }
 }

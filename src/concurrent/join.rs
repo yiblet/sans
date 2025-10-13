@@ -1,14 +1,14 @@
 //! Joining multiple coroutines for concurrent execution.
 //!
 //! This module provides the [`Join`] combinator for running multiple coroutines
-//! concurrently, polling them for outputs and directing inputs to specific stages.
+//! concurrently, polling them for outputs and directing inputs to specific coroutines.
 
 use crate::poll::{Poll, PollError, PollOutput, Pollable, init_poll, poll};
 use crate::{InitSans, Sans, Step};
 
-/// Create a [`Join`] from an array of [`InitSans`] stages.
+/// Create a [`Join`] from an array of [`InitSans`] coroutines.
 ///
-/// Each stage is wrapped in a [`Pollable`] using [`init_poll`], allowing them to be
+/// Each coroutine is wrapped in a [`Pollable`] using [`init_poll`], allowing them to be
 /// polled concurrently. See [`Join`] for details on how concurrent execution works.
 ///
 /// # Examples
@@ -18,13 +18,13 @@ use crate::{InitSans, Sans, Step};
 /// use sans::poll::{Poll, PollOutput};
 /// use sans::concurrent::{init_join, JoinEnvelope};
 ///
-/// // Create two stages with initial outputs
+/// // Create two coroutines with initial outputs
 /// fn add_one(x: i32) -> i32 { x + 1 }
 /// let f = add_one as fn(i32) -> i32;
-/// let stage1 = (100, repeat(f));
-/// let stage2 = (200, repeat(f));
+/// let coro1 = (100, repeat(f));
+/// let coro2 = (200, repeat(f));
 ///
-/// let mut joined = init_join([stage1, stage2]);
+/// let mut joined = init_join([coro1, coro2]);
 ///
 /// // Poll to get initial outputs
 /// match joined.next(Poll::Poll) {
@@ -49,10 +49,10 @@ where
     }
 }
 
-/// Create a [`Join`] from an array of [`Sans`] stages.
+/// Create a [`Join`] from an array of [`Sans`] coroutines.
 ///
-/// Wraps each stage in a [`Pollable`] for concurrent execution. The resulting [`Join`]
-/// can be polled to get outputs from any ready stage, or sent inputs directed to specific stages.
+/// Wraps each coroutine in a [`Pollable`] for concurrent execution. The resulting [`Join`]
+/// can be polled to get outputs from any ready coroutine, or sent inputs directed to specific coroutines.
 ///
 /// # Examples
 ///
@@ -62,17 +62,17 @@ where
 /// use sans::concurrent::{join, JoinEnvelope};
 ///
 /// fn add_one(x: i32) -> i32 { x + 1 }
-/// let stage1 = repeat(add_one);
-/// let stage2 = repeat(add_one);
+/// let coro1 = repeat(add_one);
+/// let coro2 = repeat(add_one);
 ///
-/// let mut joined = join([stage1, stage2]);
+/// let mut joined = join([coro1, coro2]);
 ///
-/// // Send input to first stage
+/// // Send input to first coro
 /// match joined.next(Poll::Input(JoinEnvelope::new(0, 10))) {
 ///     Step::Yielded(PollOutput::Output(env)) => {
 ///         assert_eq!(*env.value(), 11);
 ///     }
-///     _ => panic!("Expected output from stage 0"),
+///     _ => panic!("Expected output from coro 0"),
 /// }
 /// ```
 pub fn join<const N: usize, I, O, S>(rest: [S; N]) -> Join<N, S, O, S::Return>
@@ -87,9 +87,9 @@ where
     }
 }
 
-/// Create a [`JoinVec`] from a vector of [`Sans`] stages.
+/// Create a [`JoinVec`] from a vector of [`Sans`] coroutines.
 ///
-/// Like [`join`] but accepts a dynamic number of stages at runtime.
+/// Like [`join`] but accepts a dynamic number of coroutines at runtime.
 pub fn join_vec<I, O, S>(sans: Vec<S>) -> JoinVec<S, O, S::Return>
 where
     S: Sans<I, O>,
@@ -103,9 +103,9 @@ where
     }
 }
 
-/// Create a [`JoinVec`] from a vector of [`InitSans`] stages.
+/// Create a [`JoinVec`] from a vector of [`InitSans`] coroutines.
 ///
-/// Like [`init_join`] but accepts a dynamic number of stages at runtime.
+/// Like [`init_join`] but accepts a dynamic number of coroutines at runtime.
 pub fn init_join_vec<I, O, S, T>(inits: Vec<T>) -> JoinVec<S, O, S::Return>
 where
     T: InitSans<I, O, Next = S>,
@@ -122,13 +122,13 @@ where
 
 /// Runs multiple coroutines concurrently, allowing them to be polled and fed inputs independently.
 ///
-/// `Join` coordinates execution of `N` stages, each wrapped in a [`Pollable`]. Inputs and outputs
-/// are tagged with a [`JoinEnvelope`] containing the stage index.
+/// `Join` coordinates execution of `N` coroutines, each wrapped in a [`Pollable`]. Inputs and outputs
+/// are tagged with a [`JoinEnvelope`] containing the coroutine index.
 ///
-/// When polled (`Poll::Poll`), it uses round-robin scheduling to check each stage for available
-/// output. Inputs (`Poll::Input(JoinEnvelope(index, value))`) are routed to the specified stage.
+/// When polled (`Poll::Poll`), it uses round-robin scheduling to check each coroutine for available
+/// output. Inputs (`Poll::Input(JoinEnvelope(index, value))`) are routed to the specified coroutine.
 ///
-/// The join completes when all stages complete, returning an array of their return values.
+/// The join completes when all coroutines complete, returning an array of their return values.
 pub struct Join<const N: usize, S, O, R> {
     pollables: [Pollable<S, O, R>; N],
     returns: [Option<R>; N],
@@ -136,9 +136,9 @@ pub struct Join<const N: usize, S, O, R> {
     complete: usize,
 }
 
-/// Vec-based version of [`Join`] for dynamic number of stages.
+/// Vec-based version of [`Join`] for dynamic number of coroutines.
 ///
-/// Like [`Join`] but uses a `Vec` to store stages, allowing the number to be determined at runtime.
+/// Like [`Join`] but uses a `Vec` to store coroutines, allowing the number to be determined at runtime.
 pub struct JoinVec<S, O, R> {
     pollables: Vec<Pollable<S, O, R>>,
     returns: Vec<Option<R>>,
@@ -149,7 +149,7 @@ pub struct JoinVec<S, O, R> {
 /// Errors that can occur during join execution.
 #[derive(Debug)]
 pub enum JoinError {
-    /// A pollable stage failed with the given index and error.
+    /// A pollable coroutine failed with the given index and error.
     PollableFailed(JoinId, PollError),
 }
 
@@ -165,9 +165,9 @@ impl std::fmt::Display for JoinError {
 
 impl std::error::Error for JoinError {}
 
-/// Identifier for a stage in a [`Join`] operation.
+/// Identifier for a coroutine in a [`Join`] operation.
 ///
-/// This is a type-safe wrapper around a stage index.
+/// This is a type-safe wrapper around a coroutine index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JoinId(usize);
 
@@ -181,9 +181,9 @@ impl JoinId {
     }
 }
 
-/// Wraps values with a stage index for routing in [`Join`] operations.
+/// Wraps values with a coroutine index for routing in [`Join`] operations.
 ///
-/// The first field is the stage index, the second is the wrapped value.
+/// The first field is the coroutine index, the second is the wrapped value.
 ///
 /// Implements `Deref` to access the inner value conveniently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

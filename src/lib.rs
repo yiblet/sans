@@ -11,7 +11,7 @@
 //!
 //! ## Key Features
 //!
-//! - **Composable**: Chain stages together with `.chain()`
+//! - **Composable**: Chain coroutines together with `.chain()`
 //! - **Transformable**: Use `.map_input()`, `.map_yield()`, `.map_done()`
 //! - **Async Support**: Both sync and async execution with `handle()` and `handle_async()`
 //!
@@ -32,7 +32,7 @@
 //!
 //! This library is organized by capability:
 //!
-//! - **[`build`]** - Creating new coroutine stages
+//! - **[`build`]** - Creating new coroutines
 //! - **[`compose`]** - Chaining and transforming coroutines
 //! - **[`result`]** - Result combinators for error handling in coroutines
 //! - **[`poll`]** - Universal adapter implementing both [`Sans`] and [`InitSans`] for bridging APIs
@@ -44,16 +44,16 @@
 //!
 //! ## Common Functions
 //!
-//! **Building Stages:**
+//! **Building Coroutines:**
 //! - [`once(f)`](build::once) - Apply function once, then complete
 //! - [`repeat(f)`](build::repeat) - Apply function repeatedly
-//! - [`init(value, stage)`](build::init) - Wrap a `Sans` with an initial output (for `and_then`)
+//! - [`init(value, coroutine)`](build::init) - Wrap a `Sans` with an initial output (for `and_then`)
 //! - [`init_once(value, f)`](build::init_once) - Yield initial value, then apply function once
-//! - [`chain(a, b)`](compose::chain) - Run stage `a` to completion, then run stage `b`
+//! - [`chain(a, b)`](compose::chain) - Run coroutine `a` to completion, then run coroutine `b`
 //!
 //! **Execution:**
-//! - [`handle(stage, responder)`](run::handle) - Drive computation with sync responses
-//! - [`handle_async(stage, responder)`](run::handle_async) - Drive computation with async responses
+//! - [`handle(coroutine, responder)`](run::handle) - Drive computation with sync responses
+//! - [`handle_async(coroutine, responder)`](run::handle_async) - Drive computation with async responses
 
 // Core modules (essential types)
 mod init;

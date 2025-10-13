@@ -18,12 +18,12 @@ use crate::{Sans, Step};
 /// use sans::prelude::*;
 ///
 /// // Using init() with and_then
-/// let mut stage = once(|x: i32| x * 2)
+/// let mut coro = once(|x: i32| x * 2)
 ///     .and_then(|val| init(val * 10, repeat(move |x| x + val)));
 ///
-/// assert_eq!(stage.next(5).unwrap_yielded(), 10);  // First stage: 5 * 2
-/// assert_eq!(stage.next(7).unwrap_yielded(), 70);  // Second stage init: 7 * 10
-/// assert_eq!(stage.next(3).unwrap_yielded(), 10);  // Second stage: 3 + 7
+/// assert_eq!(coro.next(5).unwrap_yielded(), 10);  // First coro: 5 * 2
+/// assert_eq!(coro.next(7).unwrap_yielded(), 70);  // Second coro init: 7 * 10
+/// assert_eq!(coro.next(3).unwrap_yielded(), 10);  // Second coro: 3 + 7
 /// ```
 pub fn init<I, O, S>(output: O, continuation: S) -> (O, S)
 where
@@ -52,14 +52,14 @@ pub fn init_repeat<I, O, F: FnMut(I) -> O>(o: O, f: F) -> (O, Repeat<F>) {
 /// use sans::prelude::*;
 ///
 /// let mut counter = 0;
-/// let (initial, mut stage) = init_from_fn(42, move |x: i32| {
+/// let (initial, mut coro) = init_from_fn(42, move |x: i32| {
 ///     counter += 1;
 ///     if counter < 3 { Step::Yielded(x * counter) } else { Step::Complete(x + counter) }
 /// });
 /// assert_eq!(initial, 42);
-/// assert_eq!(stage.next(10).unwrap_yielded(), 10);
-/// assert_eq!(stage.next(10).unwrap_yielded(), 20);
-/// assert_eq!(stage.next(10).unwrap_complete(), 13);
+/// assert_eq!(coro.next(10).unwrap_yielded(), 10);
+/// assert_eq!(coro.next(10).unwrap_yielded(), 20);
+/// assert_eq!(coro.next(10).unwrap_complete(), 13);
 /// ```
 pub fn init_from_fn<I, O, D, F>(initial: O, f: F) -> (O, FromFn<F>)
 where

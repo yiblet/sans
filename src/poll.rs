@@ -43,7 +43,7 @@ impl<S, O, R> PollState<S, O, R> {
 
 /// A coroutine wrapper that allows polling for outputs and asynchronously providing inputs.
 ///
-/// Created via [`poll`] or [`init_poll`]. Wraps a [`Sans`] stage to enable explicit
+/// Created via [`poll`] or [`init_poll`]. Wraps a [`Sans`] coroutine to enable explicit
 /// control over when inputs are provided and outputs are retrieved.
 ///
 /// # Universal Adapter Property
@@ -59,33 +59,33 @@ pub struct Pollable<S, O, R> {
     state: PollState<S, O, R>,
 }
 
-/// Input type for [`Pollable`] stages.
+/// Input type for [`Pollable`] coroutines.
 ///
 /// Either polls for available output or provides an input value.
 pub enum Poll<I> {
     /// Check if there's output available without providing input.
     Poll,
-    /// Provide an input value to the stage.
+    /// Provide an input value to the coroutine.
     Input(I),
 }
 
-/// Output from a [`Pollable`] stage.
+/// Output from a [`Pollable`] coroutine.
 #[derive(Debug)]
 pub enum PollOutput<I, O> {
-    /// Stage produced an output value.
+    /// Coroutine produced an output value.
     Output(O),
-    /// Stage completed (should not occur in Yielded, only in Complete).
+    /// Coroutine completed (should not occur in Yielded, only in Complete).
     Complete,
-    /// Stage needs input before it can produce output.
+    /// Coroutine needs input before it can produce output.
     NeedsInput,
-    /// Input was provided but stage wasn't ready for it; poll first.
+    /// Input was provided but coroutine wasn't ready for it; poll first.
     NeedsPoll(I),
 }
 
 /// Errors from [`Pollable`] operations.
 #[derive(Debug)]
 pub enum PollError {
-    /// Attempted to poll or provide input after stage completed.
+    /// Attempted to poll or provide input after coroutine completed.
     AlreadyComplete,
 }
 
@@ -99,7 +99,7 @@ impl std::fmt::Display for PollError {
 
 impl std::error::Error for PollError {}
 
-/// Wrap a [`Sans`] stage in a [`Pollable`] for explicit input/output control.
+/// Wrap a [`Sans`] coroutine in a [`Pollable`] for explicit input/output control.
 ///
 /// The resulting [`Pollable`] can be polled with [`Poll::Poll`] to check for available
 /// output, or sent inputs with [`Poll::Input`].
@@ -113,10 +113,10 @@ impl std::error::Error for PollError {}
 /// use sans::prelude::*;
 /// use sans::poll::{Poll, PollOutput};
 ///
-/// let stage = repeat(|x: i32| x + 1);
-/// let mut pollable = poll(stage);
+/// let coro = repeat(|x: i32| x + 1);
+/// let mut pollable = poll(coro);
 ///
-/// // Poll first - stage needs input
+/// // Poll first - coro needs input
 /// match pollable.next(Poll::Poll) {
 ///     Step::Yielded(PollOutput::NeedsInput) => {}
 ///     _ => panic!("Expected NeedsInput"),
@@ -128,18 +128,18 @@ impl std::error::Error for PollError {}
 ///     _ => panic!("Expected Output(6)"),
 /// }
 /// ```
-pub fn poll<I, S, O, R>(stage: S) -> Pollable<S, O, R>
+pub fn poll<I, S, O, R>(coro: S) -> Pollable<S, O, R>
 where
     S: Sans<I, O>,
 {
     Pollable {
-        state: PollState::Sans(stage),
+        state: PollState::Sans(coro),
     }
 }
 
-/// Wrap an [`InitSans`] stage in a [`Pollable`], handling the initial output.
+/// Wrap an [`InitSans`] coroutine in a [`Pollable`], handling the initial output.
 ///
-/// If the stage has an initial output, it will be available on the first poll.
+/// If the coroutine has an initial output, it will be available on the first poll.
 /// If it completes immediately, the [`Pollable`] will return that completion.
 ///
 /// **Note:** Because [`Pollable`] implements both [`Sans`] and [`InitSans`], this also serves
@@ -217,8 +217,8 @@ mod tests {
 
     #[test]
     fn test_poll_basic_needs_input() {
-        let stage = repeat(|x: i32| x + 1);
-        let mut pollable = poll(stage);
+        let coro = repeat(|x: i32| x + 1);
+        let mut pollable = poll(coro);
 
         // Initially, polling should indicate needs input
         match pollable.next(Poll::Poll) {
@@ -229,8 +229,8 @@ mod tests {
 
     #[test]
     fn test_poll_input_yields_output() {
-        let stage = repeat(|x: i32| x + 1);
-        let mut pollable = poll(stage);
+        let coro = repeat(|x: i32| x + 1);
+        let mut pollable = poll(coro);
 
         // Send input
         match pollable.next(Poll::Input(5)) {
@@ -241,8 +241,8 @@ mod tests {
 
     #[test]
     fn test_poll_sequence_poll_input_poll() {
-        let stage = repeat(|x: i32| x * 2);
-        let mut pollable = poll(stage);
+        let coro = repeat(|x: i32| x * 2);
+        let mut pollable = poll(coro);
 
         // Poll -> NeedsInput
         match pollable.next(Poll::Poll) {
@@ -265,8 +265,8 @@ mod tests {
 
     #[test]
     fn test_poll_completion() {
-        let stage = once(|x: i32| x + 10);
-        let mut pollable = poll(stage);
+        let coro = once(|x: i32| x + 10);
+        let mut pollable = poll(coro);
 
         // Input yields output first
         match pollable.next(Poll::Input(5)) {
@@ -283,8 +283,8 @@ mod tests {
 
     #[test]
     fn test_poll_already_complete_error() {
-        let stage = once(|x: i32| x + 1);
-        let mut pollable = poll(stage);
+        let coro = once(|x: i32| x + 1);
+        let mut pollable = poll(coro);
 
         // Send input, get output
         pollable.next(Poll::Input(5)).expect_yielded("should yield");
@@ -354,8 +354,8 @@ mod tests {
 
     #[test]
     fn test_pollable_multiple_inputs_outputs() {
-        let stage = repeat(|x: i32| x * 2);
-        let mut pollable = poll(stage);
+        let coro = repeat(|x: i32| x * 2);
+        let mut pollable = poll(coro);
 
         for i in 1..=5 {
             // Poll
@@ -374,8 +374,8 @@ mod tests {
 
     #[test]
     fn test_poll_output_then_complete() {
-        let stage = once(|x: i32| x + 1);
-        let mut pollable = poll(stage);
+        let coro = once(|x: i32| x + 1);
+        let mut pollable = poll(coro);
 
         // Send input which yields output first
         match pollable.next(Poll::Input(10)) {

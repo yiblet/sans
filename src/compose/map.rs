@@ -5,39 +5,39 @@
 
 use crate::{InitSans, Sans, step::Step};
 
-/// Transforms input before passing it to the wrapped stage.
+/// Transforms input before passing it to the wrapped coroutine.
 ///
 /// Useful for adapting between different input types or preprocessing data.
 pub struct MapInput<S, F> {
     f: F,
-    stage: S,
+    coro: S,
 }
 
-/// Create a coroutine that transforms input before passing it to the wrapped stage.
+/// Create a coroutine that transforms input before passing it to the wrapped coroutine.
 ///
 /// # Examples
 ///
 /// ```
 /// use sans::prelude::*;
 ///
-/// let stage = repeat(|x: i32| x * 2);
-/// let mut mapped = map_input(|s: &str| s.parse::<i32>().unwrap(), stage);
+/// let coro = repeat(|x: i32| x * 2);
+/// let mut mapped = map_input(|s: &str| s.parse::<i32>().unwrap(), coro);
 ///
 /// assert_eq!(mapped.next("5").unwrap_yielded(), 10);
 /// ```
-pub fn map_input<S, F>(f: F, stage: S) -> MapInput<S, F> {
-    MapInput { f, stage }
+pub fn map_input<S, F>(f: F, coro: S) -> MapInput<S, F> {
+    MapInput { f, coro }
 }
 
-/// Create a MapInput from an InitSans stage.
+/// Create a MapInput from an InitSans coroutine.
 ///
-/// This is used when applying input transformation to a stage that yields immediately.
-pub fn init_map_input<I1, I2, O, S, F>(f: F, stage: S) -> MapInput<S, F>
+/// This is used when applying input transformation to a coroutine that yields immediately.
+pub fn init_map_input<I1, I2, O, S, F>(f: F, coro: S) -> MapInput<S, F>
 where
     S: InitSans<I2, O>,
     F: FnMut(I1) -> I2,
 {
-    MapInput { f, stage }
+    MapInput { f, coro }
 }
 
 impl<I1, I2, O, S, F> Sans<I1, O> for MapInput<S, F>
@@ -48,7 +48,7 @@ where
     type Return = S::Return;
     fn next(&mut self, input: I1) -> Step<O, Self::Return> {
         let i2 = (self.f)(input);
-        self.stage.next(i2)
+        self.coro.next(i2)
     }
 }
 
@@ -60,12 +60,12 @@ where
     type Next = MapInput<S::Next, F>;
 
     fn init(self) -> Step<(O, Self::Next), <S::Next as Sans<I2, O>>::Return> {
-        match self.stage.init() {
+        match self.coro.init() {
             Step::Yielded((o, next)) => Step::Yielded((
                 o,
                 MapInput {
                     f: self.f,
-                    stage: next,
+                    coro: next,
                 },
             )),
             Step::Complete(d) => Step::Complete(d),
@@ -73,50 +73,50 @@ where
     }
 }
 
-/// Transforms yielded values from the wrapped stage.
+/// Transforms yielded values from the wrapped coroutine.
 ///
 /// Allows converting or formatting output without changing the underlying computation.
 pub struct MapYield<S, F, I, O1> {
     f: F,
-    stage: S,
+    coro: S,
     _phantom: std::marker::PhantomData<(I, O1)>,
 }
 
-/// Create a coroutine that transforms yielded values from the wrapped stage.
+/// Create a coroutine that transforms yielded values from the wrapped coroutine.
 ///
 /// # Examples
 ///
 /// ```
 /// use sans::prelude::*;
 ///
-/// let stage = repeat(|x: i32| x * 2);
-/// let mut mapped = map_yield(|y: i32| y.to_string(), stage);
+/// let coro = repeat(|x: i32| x * 2);
+/// let mut mapped = map_yield(|y: i32| y.to_string(), coro);
 ///
 /// assert_eq!(mapped.next(5).unwrap_yielded(), "10");
 /// ```
-pub fn map_yield<I, O1, O2, S, F>(f: F, stage: S) -> MapYield<S, F, I, O1>
+pub fn map_yield<I, O1, O2, S, F>(f: F, coro: S) -> MapYield<S, F, I, O1>
 where
     S: Sans<I, O1>,
     F: FnMut(O1) -> O2,
 {
     MapYield {
         f,
-        stage,
+        coro,
         _phantom: std::marker::PhantomData,
     }
 }
 
-/// Create a MapYield from an InitSans stage.
+/// Create a MapYield from an InitSans coroutine.
 ///
-/// This is used when applying yield transformation to a stage that yields immediately.
-pub fn init_map_yield<I, O1, O2, S, F>(f: F, stage: S) -> MapYield<S, F, I, O1>
+/// This is used when applying yield transformation to a coroutine that yields immediately.
+pub fn init_map_yield<I, O1, O2, S, F>(f: F, coro: S) -> MapYield<S, F, I, O1>
 where
     S: InitSans<I, O1>,
     F: FnMut(O1) -> O2,
 {
     MapYield {
         f,
-        stage,
+        coro,
         _phantom: std::marker::PhantomData,
     }
 }
@@ -128,7 +128,7 @@ where
 {
     type Return = S::Return;
     fn next(&mut self, input: I) -> Step<O2, Self::Return> {
-        match self.stage.next(input) {
+        match self.coro.next(input) {
             Step::Yielded(o1) => Step::Yielded((self.f)(o1)),
             Step::Complete(a) => Step::Complete(a),
         }
@@ -143,7 +143,7 @@ where
     type Next = MapYield<S::Next, F, I, O1>;
 
     fn init(self) -> Step<(O2, Self::Next), <S::Next as Sans<I, O1>>::Return> {
-        match self.stage.init() {
+        match self.coro.init() {
             Step::Yielded((o1, next)) => {
                 let mut f = self.f;
                 let o2 = f(o1);
@@ -151,7 +151,7 @@ where
                     o2,
                     MapYield {
                         f,
-                        stage: next,
+                        coro: next,
                         _phantom: std::marker::PhantomData,
                     },
                 ))
@@ -161,43 +161,43 @@ where
     }
 }
 
-/// Transforms the final result from the wrapped stage.
+/// Transforms the final result from the wrapped coroutine.
 ///
 /// Applied only when the computation completes, not to intermediate yields.
 pub struct MapReturn<S, F> {
     f: F,
-    stage: S,
+    coro: S,
 }
 
-/// Create a coroutine that transforms the final result from the wrapped stage.
+/// Create a coroutine that transforms the final result from the wrapped coroutine.
 ///
 /// # Examples
 ///
 /// ```
 /// use sans::prelude::*;
 ///
-/// let stage = once(|x: i32| x + 5);
-/// let mut mapped = map_return(|r: i32| r * 10, stage);
+/// let coro = once(|x: i32| x + 5);
+/// let mut mapped = map_return(|r: i32| r * 10, coro);
 ///
 /// // Yield is not transformed
 /// assert_eq!(mapped.next(10).unwrap_yielded(), 15);
 /// // Return is transformed: 20 * 10 = 200
 /// assert_eq!(mapped.next(20).unwrap_complete(), 200);
 /// ```
-pub fn map_return<S, F>(f: F, stage: S) -> MapReturn<S, F> {
-    MapReturn { f, stage }
+pub fn map_return<S, F>(f: F, coro: S) -> MapReturn<S, F> {
+    MapReturn { f, coro }
 }
 
-/// Create a MapReturn from an InitSans stage.
+/// Create a MapReturn from an InitSans coroutine.
 ///
-/// This is used when applying return transformation to a stage that yields immediately.
-pub fn init_map_return<I, O, D1, D2, S, F>(f: F, stage: S) -> MapReturn<S, F>
+/// This is used when applying return transformation to a coroutine that yields immediately.
+pub fn init_map_return<I, O, D1, D2, S, F>(f: F, coro: S) -> MapReturn<S, F>
 where
     S: InitSans<I, O>,
     S::Next: Sans<I, O, Return = D1>,
     F: FnMut(D1) -> D2,
 {
-    MapReturn { f, stage }
+    MapReturn { f, coro }
 }
 
 impl<I, O, D1, D2, S, F> Sans<I, O> for MapReturn<S, F>
@@ -207,7 +207,7 @@ where
 {
     type Return = D2;
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
-        match self.stage.next(input) {
+        match self.coro.next(input) {
             Step::Yielded(o) => Step::Yielded(o),
             Step::Complete(r1) => Step::Complete((self.f)(r1)),
         }
@@ -223,12 +223,12 @@ where
     type Next = MapReturn<S::Next, F>;
 
     fn init(self) -> Step<(O, Self::Next), D2> {
-        match self.stage.init() {
+        match self.coro.init() {
             Step::Yielded((o, next)) => Step::Yielded((
                 o,
                 MapReturn {
                     f: self.f,
-                    stage: next,
+                    coro: next,
                 },
             )),
             Step::Complete(d1) => {
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn test_map_input_and_map_yield_pipeline() {
         let mut total = 0_i64;
-        let init_stage = (
+        let init_coro = (
             0_i64,
             repeat(move |delta: i64| {
                 total += delta;
@@ -271,19 +271,19 @@ mod tests {
             })
             .map_yield(|value: i64| format!("total={value}"));
 
-        let (initial_total, mut stage) = init_stage.init().unwrap_yielded();
+        let (initial_total, mut coro) = init_coro.init().unwrap_yielded();
 
         assert_eq!("total=0", initial_total);
-        assert_eq!("total=5", stage.next("add 5").unwrap_yielded());
-        assert_eq!("total=2", stage.next("sub 3").unwrap_yielded());
-        assert_eq!("total=7", stage.next("add 5").unwrap_yielded());
+        assert_eq!("total=5", coro.next("add 5").unwrap_yielded());
+        assert_eq!("total=2", coro.next("sub 3").unwrap_yielded());
+        assert_eq!("total=7", coro.next("add 5").unwrap_yielded());
     }
 
     #[test]
     fn test_map_input_basic() {
         use crate::build::repeat;
-        let stage = repeat(|x: i32| x * 2);
-        let mut mapped = map_input(|s: &str| s.parse::<i32>().unwrap(), stage);
+        let coro = repeat(|x: i32| x * 2);
+        let mut mapped = map_input(|s: &str| s.parse::<i32>().unwrap(), coro);
 
         assert_eq!(mapped.next("5").unwrap_yielded(), 10);
         assert_eq!(mapped.next("7").unwrap_yielded(), 14);
@@ -293,8 +293,8 @@ mod tests {
     #[test]
     fn test_map_input_with_once() {
         use crate::build::once;
-        let stage = once(|x: i32| x + 100);
-        let mut mapped = map_input(|s: String| s.len() as i32, stage);
+        let coro = once(|x: i32| x + 100);
+        let mut mapped = map_input(|s: String| s.len() as i32, coro);
 
         // First input: "hello".len() = 5, yields 5 + 100 = 105
         assert_eq!(mapped.next("hello".to_string()).unwrap_yielded(), 105);
@@ -305,8 +305,8 @@ mod tests {
     #[test]
     fn test_map_input_preserves_return() {
         use crate::build::once;
-        let stage = once(|x: i32| x * 2);
-        let mut mapped = map_input(|x: i32| x + 1, stage);
+        let coro = once(|x: i32| x * 2);
+        let mut mapped = map_input(|x: i32| x + 1, coro);
 
         // Input 5 -> 6, yields 12
         mapped.next(5).unwrap_yielded();
@@ -317,8 +317,8 @@ mod tests {
     #[test]
     fn test_map_yield_basic() {
         use crate::build::repeat;
-        let stage = repeat(|x: i32| x * 2);
-        let mut mapped = map_yield(|y: i32| y.to_string(), stage);
+        let coro = repeat(|x: i32| x * 2);
+        let mut mapped = map_yield(|y: i32| y.to_string(), coro);
 
         assert_eq!(mapped.next(5).unwrap_yielded(), "10");
         assert_eq!(mapped.next(7).unwrap_yielded(), "14");
@@ -328,8 +328,8 @@ mod tests {
     #[test]
     fn test_map_yield_with_once() {
         use crate::build::once;
-        let stage = once(|x: i32| x + 10);
-        let mut mapped = map_yield(|y: i32| format!("result={}", y), stage);
+        let coro = once(|x: i32| x + 10);
+        let mut mapped = map_yield(|y: i32| format!("result={}", y), coro);
 
         assert_eq!(mapped.next(5).unwrap_yielded(), "result=15");
         assert_eq!(mapped.next(20).unwrap_complete(), 20);
@@ -338,8 +338,8 @@ mod tests {
     #[test]
     fn test_map_yield_preserves_return() {
         use crate::build::once;
-        let stage = once(|x: i32| x * 2);
-        let mut mapped = map_yield(|y: i32| y as f64, stage);
+        let coro = once(|x: i32| x * 2);
+        let mut mapped = map_yield(|y: i32| y as f64, coro);
 
         // Yield is transformed to f64
         assert_eq!(mapped.next(5).unwrap_yielded(), 10.0);
@@ -350,8 +350,8 @@ mod tests {
     #[test]
     fn test_map_return_basic() {
         use crate::build::once;
-        let stage = once(|x: i32| x + 5);
-        let mut mapped = map_return(|r: i32| r * 10, stage);
+        let coro = once(|x: i32| x + 5);
+        let mut mapped = map_return(|r: i32| r * 10, coro);
 
         // Yield is not transformed
         assert_eq!(mapped.next(10).unwrap_yielded(), 15);
@@ -363,16 +363,16 @@ mod tests {
     fn test_map_return_with_repeat() {
         use crate::build::repeat;
         // repeat never completes, so this just demonstrates the type change
-        let stage = repeat(|x: i32| x + 1);
-        let _mapped = map_return(|r: i32| r.to_string(), stage);
+        let coro = repeat(|x: i32| x + 1);
+        let _mapped = map_return(|r: i32| r.to_string(), coro);
         // We can't test completion, but we can verify it compiles with transformed return type
     }
 
     #[test]
     fn test_map_return_yield_passthrough() {
         use crate::build::once;
-        let stage = once(|x: i32| x * 2);
-        let mut mapped = map_return(|r: i32| format!("done:{}", r), stage);
+        let coro = once(|x: i32| x * 2);
+        let mut mapped = map_return(|r: i32| format!("done:{}", r), coro);
 
         // First: yields 5 * 2 = 10
         assert_eq!(mapped.next(5).unwrap_yielded(), 10);
@@ -383,8 +383,8 @@ mod tests {
     #[test]
     fn test_map_return_type_conversion() {
         use crate::build::once;
-        let stage = once(|x: i32| x + 1);
-        let mut mapped = map_return(|r: i32| (r as f64, r * 2), stage);
+        let coro = once(|x: i32| x + 1);
+        let mut mapped = map_return(|r: i32| (r as f64, r * 2), coro);
 
         mapped.next(5).unwrap_yielded(); // 6
         // Return is transformed to tuple
@@ -397,12 +397,12 @@ mod tests {
         // Input: &str -> parse to i32
         // Yield: i32 -> format as string
         // Return: i32 -> convert to f64
-        let stage = once(|x: i32| x * 2);
+        let coro = once(|x: i32| x * 2);
         let mut mapped = map_return(
             |r: i32| r as f64,
             map_yield(
                 |y: i32| format!("yielded:{}", y),
-                map_input(|s: &str| s.parse::<i32>().unwrap(), stage),
+                map_input(|s: &str| s.parse::<i32>().unwrap(), coro),
             ),
         );
 
@@ -415,9 +415,9 @@ mod tests {
     #[test]
     fn test_map_input_multiple_transformations() {
         use crate::build::repeat;
-        let stage = repeat(|x: i32| x + 1);
+        let coro = repeat(|x: i32| x + 1);
         // Double map_input: String -> usize (len) -> i32
-        let mut mapped = map_input(|s: String| s.len(), map_input(|n: usize| n as i32, stage));
+        let mut mapped = map_input(|s: String| s.len(), map_input(|n: usize| n as i32, coro));
 
         // Input "hello" -> len=5 -> 5 + 1 = 6
         assert_eq!(mapped.next("hello".to_string()).unwrap_yielded(), 6);

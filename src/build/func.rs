@@ -70,9 +70,9 @@ pub struct Once<F>(Option<F>);
 /// ```rust
 /// use sans::prelude::*;
 ///
-/// let mut stage = once(|x: i32| x + 10);
-/// assert_eq!(stage.next(5).unwrap_yielded(), 15);
-/// assert_eq!(stage.next(3).unwrap_complete(), 3); // Done
+/// let mut coro = once(|x: i32| x + 10);
+/// assert_eq!(coro.next(5).unwrap_yielded(), 15);
+/// assert_eq!(coro.next(3).unwrap_complete(), 3); // Done
 /// ```
 pub fn once<F>(f: F) -> Once<F> {
     Once(Some(f))
