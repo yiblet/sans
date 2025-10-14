@@ -22,15 +22,318 @@
 //! assert_eq!(cont.next(10).unwrap_yielded(), 11);
 //! ```
 
+use std::marker::PhantomData;
+
 use crate::{
     Sans, Step,
     build::{Once, Repeat, once, repeat},
     compose::{
-        Chain, MapInput, MapReturn, MapYield, init_chain, init_map_input, init_map_return,
+        AndThen, Chain, MapInput, MapReturn, MapYield, init_chain, init_map_input, init_map_return,
         init_map_yield,
     },
     iter::InitSansIter,
 };
+
+/// Result of initializing a coroutine that must yield before continuing.
+#[derive(Debug)]
+pub struct Yielded<O, S>(pub O, pub S);
+
+impl<O, S> Yielded<O, S> {
+    /// Split the yielded pair into its components.
+    pub fn split(self) -> (O, S) {
+        (self.0, self.1)
+    }
+
+    /// Map the continuation stored inside this value.
+    pub fn map_next<F, T>(self, f: F) -> Yielded<O, T>
+    where
+        F: FnOnce(S) -> T,
+    {
+        let (output, next) = self.split();
+        Yielded(output, f(next))
+    }
+
+    /// Transform coroutine inputs before they reach the continuation.
+    pub fn map_input<I1, I2, F>(self, f: F) -> Yielded<O, MapInput<S, F>>
+    where
+        S: Sans<I2, O>,
+        F: FnMut(I1) -> I2,
+    {
+        let (output, next) = self.split();
+        Yielded(output, next.map_input(f))
+    }
+
+    /// Transform yielded values produced by the continuation.
+    pub fn map_yield<I, O2, F>(self, mut f: F) -> Yielded<O2, MapYield<S, F, I, O>>
+    where
+        S: Sans<I, O>,
+        F: FnMut(O) -> O2,
+    {
+        let (output, next) = self.split();
+        let mapped_output = f(output);
+        Yielded(mapped_output, next.map_yield(f))
+    }
+
+    /// Transform the return value produced when the continuation completes.
+    pub fn map_return<I, D2, F>(self, f: F) -> Yielded<O, MapReturn<S, F>>
+    where
+        S: Sans<I, O>,
+        F: FnMut(S::Return) -> D2,
+    {
+        let (output, next) = self.split();
+        Yielded(output, next.map_return(f))
+    }
+
+    /// Chain the continuation with another coroutine.
+    pub fn chain<I, R>(self, r: R) -> Yielded<O, Chain<S, R>>
+    where
+        S: Sans<I, O, Return = I>,
+        R: Sans<I, O>,
+    {
+        let (output, next) = self.split();
+        Yielded(output, next.chain(r))
+    }
+
+    /// Chain the continuation with a function that produces an `InitSans`.
+    pub fn and_then<I, T, F>(self, f: F) -> Yielded<O, AndThen<S, T::Next, F>>
+    where
+        S: Sans<I, O, Return = I>,
+        T: InitSans<I, O>,
+        F: FnOnce(S::Return) -> T,
+    {
+        let (output, next) = self.split();
+        Yielded(output, next.and_then(f))
+    }
+}
+
+impl<O, S> From<(O, S)> for Yielded<O, S> {
+    fn from(value: (O, S)) -> Self {
+        Yielded(value.0, value.1)
+    }
+}
+
+impl<O, S> From<Yielded<O, S>> for (O, S) {
+    fn from(value: Yielded<O, S>) -> Self {
+        value.split()
+    }
+}
+
+/// Initialization result that may already be complete.
+#[derive(Debug)]
+pub enum ShortCircuit<S, R> {
+    Pending(S),
+    Complete(R),
+}
+
+impl<S, R> ShortCircuit<S, R> {
+    /// Map the pending continuation.
+    pub fn map_pending<F, T>(self, f: F) -> ShortCircuit<T, R>
+    where
+        F: FnOnce(S) -> T,
+    {
+        match self {
+            ShortCircuit::Pending(s) => ShortCircuit::Pending(f(s)),
+            ShortCircuit::Complete(r) => ShortCircuit::Complete(r),
+        }
+    }
+
+    /// Map the completion value.
+    pub fn map_complete<F, R2>(self, f: F) -> ShortCircuit<S, R2>
+    where
+        F: FnOnce(R) -> R2,
+    {
+        match self {
+            ShortCircuit::Pending(s) => ShortCircuit::Pending(s),
+            ShortCircuit::Complete(r) => ShortCircuit::Complete(f(r)),
+        }
+    }
+
+    /// Convert into a `Result`, using `Ok` for `Pending` and `Err` for `Complete`.
+    pub fn into_result(self) -> Result<S, R> {
+        match self {
+            ShortCircuit::Pending(s) => Ok(s),
+            ShortCircuit::Complete(r) => Err(r),
+        }
+    }
+
+    /// Transform inputs to the pending continuation.
+    pub fn map_input<I1, I2, O, F>(self, f: F) -> ShortCircuit<MapInput<S, F>, R>
+    where
+        S: Sans<I2, O>,
+        F: FnMut(I1) -> I2,
+    {
+        self.map_pending(|s| s.map_input(f))
+    }
+
+    /// Transform yields from the pending continuation.
+    pub fn map_yield<I, O1, O2, F>(self, f: F) -> ShortCircuit<MapYield<S, F, I, O1>, R>
+    where
+        S: Sans<I, O1>,
+        F: FnMut(O1) -> O2,
+    {
+        self.map_pending(|s| s.map_yield(f))
+    }
+
+    /// Transform the completion value.
+    pub fn map_return<F, R2>(self, f: F) -> ShortCircuit<S, R2>
+    where
+        F: FnOnce(R) -> R2,
+    {
+        self.map_complete(f)
+    }
+
+    /// Chain the pending continuation with another coroutine.
+    pub fn chain<I, O, R2>(self, r: R2) -> ShortCircuit<Chain<S, R2>, R>
+    where
+        S: Sans<I, O, Return = I>,
+        R2: Sans<I, O>,
+    {
+        self.map_pending(|s| s.chain(r))
+    }
+
+    /// Chain the pending continuation with a function that produces an `InitSans`.
+    pub fn and_then<I, O, T, F>(self, f: F) -> ShortCircuit<AndThen<S, T::Next, F>, R>
+    where
+        S: Sans<I, O, Return = I>,
+        T: InitSans<I, O, Return = R>,
+        F: FnOnce(S::Return) -> T,
+    {
+        match self {
+            ShortCircuit::Pending(s) => ShortCircuit::Pending(s.and_then(f)),
+            ShortCircuit::Complete(r) => ShortCircuit::Complete(r),
+        }
+    }
+}
+
+impl<O, S, R> From<Step<(O, S), R>> for ShortCircuit<Yielded<O, S>, R> {
+    fn from(step: Step<(O, S), R>) -> Self {
+        match step {
+            Step::Yielded((o, s)) => ShortCircuit::Pending(Yielded(o, s)),
+            Step::Complete(r) => ShortCircuit::Complete(r),
+        }
+    }
+}
+
+impl<S, R> From<Step<S, R>> for ShortCircuit<S, R> {
+    fn from(step: Step<S, R>) -> Self {
+        match step {
+            Step::Yielded(s) => ShortCircuit::Pending(s),
+            Step::Complete(r) => ShortCircuit::Complete(r),
+        }
+    }
+}
+
+/// Builder entry point for constructing initialization states.
+pub fn build<I, O>() -> Build<I, O> {
+    Build(PhantomData)
+}
+
+/// Create a builder that yields an initial value.
+pub fn yielding<I, O>(output: O) -> YieldBuild<I, O> {
+    YieldBuild {
+        output,
+        marker: PhantomData,
+    }
+}
+
+/// Create a builder that may short-circuit during initialization.
+pub fn shortcircuit<I, O, R>() -> ShortCircuitBuild<I, O, R> {
+    ShortCircuitBuild(PhantomData)
+}
+
+/// Builder state before any initialization behaviour is chosen.
+#[derive(Debug, Default)]
+pub struct Build<I, O>(PhantomData<(I, O)>);
+
+impl<I, O> Build<I, O> {
+    pub fn yielding(self, output: O) -> YieldBuild<I, O> {
+        YieldBuild {
+            output,
+            marker: PhantomData,
+        }
+    }
+
+    pub fn shortcircuit<R>(self) -> ShortCircuitBuild<I, O, R> {
+        ShortCircuitBuild(PhantomData)
+    }
+
+    pub fn then<S>(self, sans: S) -> S
+    where
+        S: Sans<I, O>,
+    {
+        sans
+    }
+}
+
+/// Builder state representing an initial yield with guaranteed continuation.
+#[derive(Debug)]
+pub struct YieldBuild<I, O> {
+    output: O,
+    marker: PhantomData<I>,
+}
+
+impl<I, O> YieldBuild<I, O> {
+    pub fn then<S>(self, sans: S) -> Yielded<O, S>
+    where
+        S: Sans<I, O>,
+    {
+        Yielded(self.output, sans)
+    }
+
+    pub fn shortcircuit<R>(self) -> YieldShortCircuitBuild<I, O, R> {
+        YieldShortCircuitBuild {
+            output: self.output,
+            marker: PhantomData,
+        }
+    }
+}
+
+/// Builder state representing a potential short-circuit without initial yield.
+#[derive(Debug, Default)]
+pub struct ShortCircuitBuild<I, O, R>(PhantomData<(I, O, R)>);
+
+impl<I, O, R> ShortCircuitBuild<I, O, R> {
+    pub fn then<S>(self, sans: S) -> ShortCircuit<S, R>
+    where
+        S: Sans<I, O>,
+    {
+        ShortCircuit::Pending(sans)
+    }
+
+    pub fn returning<S>(self, done: R) -> ShortCircuit<S, R> {
+        let _ = PhantomData::<(I, O)>;
+        let _ = PhantomData::<S>;
+        ShortCircuit::Complete(done)
+    }
+
+    pub fn yielding(self, output: O) -> YieldShortCircuitBuild<I, O, R> {
+        YieldShortCircuitBuild {
+            output,
+            marker: PhantomData,
+        }
+    }
+}
+
+/// Builder state representing an initial yield that may short-circuit.
+#[derive(Debug)]
+pub struct YieldShortCircuitBuild<I, O, R> {
+    output: O,
+    marker: PhantomData<(I, R)>,
+}
+
+impl<I, O, R> YieldShortCircuitBuild<I, O, R> {
+    pub fn then<S>(self, sans: S) -> ShortCircuit<Yielded<O, S>, R>
+    where
+        S: Sans<I, O>,
+    {
+        ShortCircuit::Pending(Yielded(self.output, sans))
+    }
+
+    pub fn returning<S>(self, done: R) -> ShortCircuit<Yielded<O, S>, R> {
+        let _ = PhantomData::<S>;
+        ShortCircuit::Complete(done)
+    }
+}
 
 /// Computations that yield an initial value before processing input.
 ///
@@ -185,10 +488,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{init_once, init_repeat, repeat};
+    use crate::build::{Repeat, init_once, init_repeat, once, repeat};
 
     fn add_three(value: i32) -> i32 {
         value + 3
+    }
+
+    fn plus_one_fn(value: i32) -> i32 {
+        value + 1
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -319,5 +626,120 @@ mod tests {
         assert_eq!("value=9", rest.next("7").unwrap_yielded());
         assert_eq!("value=16", rest.next("8").unwrap_yielded());
         assert_eq!("done=9", rest.next("9").unwrap_complete());
+    }
+
+    #[test]
+    fn yielded_round_trip_and_maps() {
+        let yielded: Yielded<_, _> = (5_i32, repeat(|x: i32| x + 1)).into();
+        let (initial, mut cont) = yielded.into();
+        assert_eq!(5, initial);
+        assert_eq!(2, cont.next(1).unwrap_yielded());
+
+        let mapped_input = yielding::<i32, i32>(7)
+            .then(repeat(|x: i32| x + 2))
+            .map_input(|text: &str| text.parse::<i32>().unwrap());
+        let (initial, mut cont) = mapped_input.into();
+        assert_eq!(7, initial);
+        assert_eq!(9, cont.next("7").unwrap_yielded());
+
+        let mapped_yield = yielding::<i32, i32>(3)
+            .then(repeat(|x: i32| x * 2))
+            .map_yield(|value| value + 1);
+        let (initial, mut cont) = mapped_yield.into();
+        assert_eq!(4, initial);
+        assert_eq!(7, cont.next(3).unwrap_yielded());
+
+        let mapped_return = yielding::<i32, i32>(0)
+            .then(once(|value: i32| value))
+            .map_return::<i32, _, _>(|ret| ret + 5);
+        let (initial, mut cont) = mapped_return.into();
+        assert_eq!(0, initial);
+        assert_eq!(10, cont.next(10).unwrap_yielded());
+        assert_eq!(16, cont.next(11).unwrap_complete());
+    }
+
+    #[test]
+    fn yielded_chain_and_then() {
+        let chained = yielding::<i32, i32>(2)
+            .then(once(|x: i32| x + 1))
+            .chain(repeat(|x: i32| x * 2));
+        let (initial, mut cont) = chained.into();
+        assert_eq!(2, initial);
+        assert_eq!(4, cont.next(3).unwrap_yielded());
+        assert_eq!(8, cont.next(4).unwrap_yielded());
+
+        let appended = yielding::<i32, i32>(1)
+            .then(once(|x: i32| x + 1))
+            .and_then(|value| init_once(value * 2, move |input: i32| input + value));
+        let (initial, mut cont) = appended.into();
+        assert_eq!(1, initial);
+        assert_eq!(3, cont.next(2).unwrap_yielded());
+    }
+
+    #[test]
+    fn shortcircuit_conversions_and_maps() {
+        let step_pending: Step<(i32, Repeat<fn(i32) -> i32>), &str> =
+            Step::Yielded((4, repeat(plus_one_fn as fn(i32) -> i32)));
+        let mut pending: ShortCircuit<Yielded<_, _>, _> = step_pending.into();
+        match &mut pending {
+            ShortCircuit::Pending(Yielded(output, sans)) => {
+                assert_eq!(4, *output);
+                assert_eq!(6, sans.next(5).unwrap_yielded());
+            }
+            ShortCircuit::Complete(_) => panic!("expected pending"),
+        }
+
+        let completed: ShortCircuit<Yielded<i32, Repeat<fn(i32) -> i32>>, _> =
+            Step::<(i32, Repeat<fn(i32) -> i32>), &str>::Complete("done").into();
+        assert!(matches!(completed, ShortCircuit::Complete("done")));
+
+        let mapped = shortcircuit::<i32, i32, _>()
+            .then(repeat(|x: i32| x + 1))
+            .map_input(|text: &str| text.parse::<i32>().unwrap())
+            .map_yield(|value| value * 3)
+            .map_return(|msg: &str| format!("{msg}!!!"));
+        match mapped {
+            ShortCircuit::Pending(mut sans) => {
+                assert_eq!(18, sans.next("5").unwrap_yielded());
+            }
+            ShortCircuit::Complete(msg) => panic!("unexpected completion: {msg}"),
+        }
+    }
+
+    #[test]
+    fn builder_state_transitions() {
+        let mut plain = build::<i32, i32>().then(once(|x: i32| x + 1));
+        assert_eq!(4, plain.next(3).unwrap_yielded());
+        assert_eq!(5, plain.next(5).unwrap_complete());
+
+        let Yielded(initial, mut cont) = yielding::<i32, i32>(10).then(once(|x: i32| x + 2));
+        assert_eq!(10, initial);
+        assert_eq!(5, cont.next(3).unwrap_yielded());
+        assert_eq!(4, cont.next(4).unwrap_complete());
+
+        let sc = shortcircuit::<i32, i32, &str>().then(once(|x: i32| x + 1));
+        match sc {
+            ShortCircuit::Pending(mut sans) => {
+                assert_eq!(6, sans.next(5).unwrap_yielded());
+                assert_eq!(7, sans.next(7).unwrap_complete());
+            }
+            ShortCircuit::Complete(_) => panic!("expected pending"),
+        }
+
+        let sc_with_yield = yielding::<i32, i32>(3)
+            .shortcircuit::<&'static str>()
+            .then(once(|x: i32| x + 1));
+        match sc_with_yield {
+            ShortCircuit::Pending(Yielded(output, mut sans)) => {
+                assert_eq!(3, output);
+                assert_eq!(2, sans.next(1).unwrap_yielded());
+                assert_eq!(8, sans.next(8).unwrap_complete());
+            }
+            ShortCircuit::Complete(_) => panic!("expected pending"),
+        }
+
+        let sc_complete: ShortCircuit<(), &str> =
+            shortcircuit::<i32, i32, &str>().returning::<()>("done");
+        assert!(matches!(sc_complete, ShortCircuit::Complete("done")));
     }
 }
