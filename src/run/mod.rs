@@ -5,7 +5,7 @@
 //! This module provides both synchronous and asynchronous execution functions,
 //! plus utilities for working with coroutines that need initial input.
 
-use crate::init::InitSans;
+use crate::init::{InitSans, ShortCircuit, Yielded};
 use crate::sans::Sans;
 use crate::step::Step;
 use std::future::Future;
@@ -19,8 +19,10 @@ where
     S: InitSans<I, O>,
     R: FnMut(O) -> I,
 {
-    match coro.init() {
-        Step::Yielded((output, mut next_coro)) => {
+    // Convert the result to ShortCircuit for consistent handling
+    let sc: ShortCircuit<Yielded<O, S::Next>, S::Return> = coro.init().into();
+    match sc {
+        ShortCircuit::Pending(Yielded(output, mut next_coro)) => {
             let mut input = responder(output);
             loop {
                 match next_coro.next(input) {
@@ -31,7 +33,7 @@ where
                 }
             }
         }
-        Step::Complete(done) => done,
+        ShortCircuit::Complete(done) => done,
     }
 }
 
@@ -85,8 +87,10 @@ where
     R: FnMut(O) -> Fut,
     Fut: Future<Output = I>,
 {
-    match coro.init() {
-        Step::Yielded((output, mut next_coro)) => {
+    // Convert the result to ShortCircuit for consistent handling
+    let sc: ShortCircuit<Yielded<O, S::Next>, S::Return> = coro.init().into();
+    match sc {
+        ShortCircuit::Pending(Yielded(output, mut next_coro)) => {
             let mut input = responder(output).await;
             loop {
                 match next_coro.next(input) {
@@ -97,7 +101,7 @@ where
                 }
             }
         }
-        Step::Complete(done) => done,
+        ShortCircuit::Complete(done) => done,
     }
 }
 

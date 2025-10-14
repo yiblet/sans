@@ -3,31 +3,35 @@
 //! This module provides the [`Chain`] and [`AndThen`] combinators for running
 //! coroutines one after another.
 
-use crate::{InitSans, Sans, step::Step};
+use crate::{
+    InitSans, Sans,
+    init::{ShortCircuit, Yielded},
+    step::Step,
+};
 
 /// A coroutine that runs one coroutine to completion, then uses its return value
 /// to create and run a second coroutine.
 ///
 /// This is similar to a monadic bind operation. The first coroutine runs until it
 /// completes, then its return value is passed to a function that produces the
-/// second coroutine (which must implement [`InitSans`]).
+/// second coroutine as a `ShortCircuit<Yielded<O, S2>, R>` result.
 ///
 /// Created via the [`and_then`] function.
 ///
 /// # Type Parameters
 ///
 /// * `S1` - The type of the first coroutine
-/// * `S2` - The type of the second coroutine's continuation (after initialization)
+/// * `S2` - The type of the second coroutine
 /// * `F` - The function type that creates the second coroutine from the first's return value
 pub struct AndThen<S1, S2, F> {
     state: AndThenState<S1, S2, F>,
 }
 
-impl<I, O, L, R, F> Sans<I, O> for AndThen<L, R::Next, F>
+impl<I, O, L, R, F> Sans<I, O> for AndThen<L, R, F>
 where
     L: Sans<I, O>,
-    R: InitSans<I, O>,
-    F: FnOnce(L::Return) -> R,
+    R: Sans<I, O>,
+    F: FnOnce(L::Return) -> ShortCircuit<Yielded<O, R>, R::Return>,
 {
     type Return = R::Return;
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
@@ -40,11 +44,11 @@ enum AndThenState<S1, S2, F> {
     OnSecond(S2),
 }
 
-impl<I, O, L, R, F> Sans<I, O> for AndThenState<L, R::Next, F>
+impl<I, O, L, R, F> Sans<I, O> for AndThenState<L, R, F>
 where
     L: Sans<I, O>,
-    R: InitSans<I, O>,
-    F: FnOnce(L::Return) -> R,
+    R: Sans<I, O>,
+    F: FnOnce(L::Return) -> ShortCircuit<Yielded<O, R>, R::Return>,
 {
     type Return = R::Return;
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
@@ -52,13 +56,13 @@ where
             AndThenState::OnFirst(l, f) => match l.next(input) {
                 Step::Yielded(o) => Step::Yielded(o),
                 Step::Complete(a) => {
-                    let r = f.take().expect("AndThen::can only be used once")(a);
-                    match r.init() {
-                        Step::Yielded((o, next_r)) => {
+                    let sc = f.take().expect("AndThen::can only be used once")(a);
+                    match sc {
+                        ShortCircuit::Pending(Yielded(o, next_r)) => {
                             *self = AndThenState::OnSecond(next_r);
                             Step::Yielded(o)
                         }
-                        Step::Complete(d) => Step::Complete(d),
+                        ShortCircuit::Complete(d) => Step::Complete(d),
                     }
                 }
             },
@@ -72,24 +76,21 @@ where
 /// This is a monadic bind operation for coroutines. The first coroutine runs to completion,
 /// then its return value is passed to a function `f` that creates the second coroutine.
 ///
-/// **Important:** The function `f` must return an [`InitSans`], not just a [`Sans`]. Use the
-/// [`init()`](crate::build::init) helper to wrap a `Sans` with an initial output:
+/// **Important:** The function `f` must return a `ShortCircuit<Yielded<O, T>, R>` result.
+/// Use the builder API to construct the result:
 ///
 /// ```rust
 /// use sans::prelude::*;
 ///
-/// // Using init() makes the syntax cleaner
+/// // Using the builder API
 /// let mut coro = once(|x: i32| x * 2)
-///     .and_then(|val| init(val * 10, repeat(move |x| x + val)));
+///     .and_then(|val| ShortCircuit::Pending(yielding(val * 10).then(repeat(move |x| x + val))));
 /// ```
-///
-/// Alternatively, you can return a tuple `(initial_output, continuation)` or use
-/// [`Step::Complete`] for immediate completion.
 ///
 /// # Arguments
 ///
 /// * `l` - The first coroutine to run
-/// * `f` - A function that takes the first coroutine's return value and produces the second coroutine
+/// * `f` - A function that takes the first coroutine's return value and produces a `ShortCircuit<Yielded<O, T>, R>`
 ///
 /// # Returns
 ///
@@ -105,7 +106,7 @@ where
 /// // Second coro uses that return value to configure its behavior
 /// let mut coro = and_then(
 ///     once(|x: i32| x * 2),  // yields x*2, returns next input
-///     |return_val| init(return_val * 10, repeat(move |y: i32| y + return_val)),
+///     |return_val| ShortCircuit::Pending(yielding(return_val * 10).then(repeat(move |y: i32| y + return_val))),
 /// );
 ///
 /// // First coro yields 5 * 2 = 10
@@ -118,11 +119,11 @@ where
 /// // Second coro continues: 3 + 7 = 10
 /// assert_eq!(coro.next(3).unwrap_yielded(), 10);
 /// ```
-pub fn and_then<I, O, L, R, F>(l: L, f: F) -> AndThen<L, R::Next, F>
+pub fn and_then<I, O, L, R, F>(l: L, f: F) -> AndThen<L, R, F>
 where
     L: Sans<I, O>,
-    R: InitSans<I, O>,
-    F: FnOnce(L::Return) -> R,
+    R: Sans<I, O>,
+    F: FnOnce(L::Return) -> ShortCircuit<Yielded<O, R>, R::Return>,
 {
     AndThen {
         state: AndThenState::OnFirst(l, Some(f)),
@@ -227,7 +228,7 @@ mod tests {
         // and_then uses the RETURN value of first coroutine to create second coroutine
         let mut coro = and_then(
             once(|x: i32| x * 2), // yields x*2, then completes with next input
-            |return_val| (return_val * 10, repeat(move |y: i32| y + return_val)),
+            |return_val| (return_val * 10, repeat(move |y: i32| y + return_val)).into(),
         );
 
         // First: 5 * 2 = 10 (yielded)
@@ -258,7 +259,7 @@ mod tests {
         });
 
         let mut coro = and_then(first, |final_count| {
-            (final_count * 100, once(move |x: i32| x + final_count))
+            (final_count * 100, once(move |x: i32| x + final_count)).into()
         });
 
         // First yields
@@ -276,7 +277,7 @@ mod tests {
     fn test_and_then_with_init_sans() {
         // Second coroutine has initial yield
         let mut coro = and_then(once(|x: i32| x + 1), |result| {
-            (result * 10, repeat(move |y: i32| y + result))
+            (result * 10, repeat(move |y: i32| y + result)).into()
         });
 
         // First coroutine: 5 + 1 = 6 (yielded)
@@ -293,7 +294,7 @@ mod tests {
     fn test_and_then_completes_immediately() {
         // First coroutine completes on first input, second coroutine yields once then completes
         let mut coro = and_then(once(|x: i32| x * 2), |val| {
-            (val + 100, once(move |x: i32| x + val))
+            (val + 100, once(move |x: i32| x + val)).into()
         });
 
         // First: 5 * 2 = 10 (yielded)

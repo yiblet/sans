@@ -35,6 +35,8 @@ where
 
 /// Creates an `InitSans` coroutine from an initial output value and a `Sans` coroutine.
 ///
+/// **Deprecated:** Use the builder API instead: `yielding(output).then(coro)`
+///
 /// This is a convenience function for constructing an `Init` wrapper that yields
 /// the provided output value first, then continues with the given coroutine.
 ///
@@ -57,25 +59,43 @@ where
 /// assert_eq!(initial, 42);
 /// assert_eq!(cont.next(10).unwrap_yielded(), 11);
 /// ```
+#[deprecated(
+    since = "0.2.0",
+    note = "Use the builder API: yielding(output).then(coro)"
+)]
 pub fn init<I, O, S: Sans<I, O>>(output: O, coro: S) -> Init<I, O, S> {
     Init(output, coro, PhantomData)
 }
 
 /// Yield an initial value, then apply a function once.
 ///
+/// **Deprecated:** Use the builder API instead: `yielding(o).then(once(f))`
+///
 /// Combines immediate output with single function application.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use the builder API: yielding(o).then(once(f))"
+)]
 pub fn init_once<I, O, F: FnOnce(I) -> O>(o: O, f: F) -> (O, Once<F>) {
     (o, super::func::once(f))
 }
 
 /// Yield an initial value, then apply a function indefinitely.
 ///
+/// **Deprecated:** Use the builder API instead: `yielding(o).then(repeat(f))`
+///
 /// Useful for generators that need to emit a seed value before starting their loop.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use the builder API: yielding(o).then(repeat(f))"
+)]
 pub fn init_repeat<I, O, F: FnMut(I) -> O>(o: O, f: F) -> (O, Repeat<F>) {
     (o, super::func::repeat(f))
 }
 
 /// Yield an initial value, then create a coroutine from a closure.
+///
+/// **Deprecated:** Use the builder API instead: `yielding(initial).then(from_fn(f))`
 ///
 /// ```rust
 /// use sans::prelude::*;
@@ -90,6 +110,10 @@ pub fn init_repeat<I, O, F: FnMut(I) -> O>(o: O, f: F) -> (O, Repeat<F>) {
 /// assert_eq!(coro.next(10).unwrap_yielded(), 20);
 /// assert_eq!(coro.next(10).unwrap_complete(), 13);
 /// ```
+#[deprecated(
+    since = "0.2.0",
+    note = "Use the builder API: yielding(initial).then(from_fn(f))"
+)]
 pub fn init_from_fn<I, O, D, F>(initial: O, f: F) -> (O, FromFn<F>)
 where
     F: FnMut(I) -> Step<O, D>,

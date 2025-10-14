@@ -1,26 +1,35 @@
 //! Coroutines with initial output.
 //!
-//! This module defines the [`InitSans`] trait for coroutines that can produce
+//! This module provides types and builders for coroutines that can produce
 //! output immediately upon initialization, before receiving any input.
 //!
-//! # The InitSans Trait
+//! # Builder API
 //!
-//! [`InitSans<I, O>`] represents a computation that:
-//! - Yields an initial output of type `O` before processing any input
-//! - Transitions to a [`Sans<I, O>`] coroutine for subsequent processing
-//! - Can complete immediately without yielding if the computation finishes during init
+//! The recommended way to create initialization results is through the builder API:
+//!
+//! - [`yielding(output).then(sans)`](yielding) - Creates a [`Yielded<O, S>`] that yields initial output before continuing
+//! - [`shortcircuit().then(sans)`](shortcircuit) or [`shortcircuit().returning(done)`](shortcircuit) - Creates a [`ShortCircuit<S, R>`] that may complete early
+//! - [`build().then(sans)`](build) - Wraps a [`Sans`] without initial output
+//!
+//! # Types
+//!
+//! - [`Yielded<O, S>`] - Result of initialization that yields output before continuing with coroutine `S`
+//! - [`ShortCircuit<S, R>`] - Result that may be `Pending(S)` or `Complete(R)`, allowing early completion
 //!
 //! # Examples
 //!
 //! ```rust
 //! use sans::prelude::*;
 //!
-//! // Create a continuation with an initial value
-//! let coro = init_once(42, |x: i32| x + 1);
-//! let (initial, mut cont) = coro.init().unwrap_yielded();
+//! // Create a coroutine with initial output using the builder API
+//! let Yielded(initial, mut cont) = yielding(42).then(repeat(|x: i32| x + 1));
 //! assert_eq!(initial, 42);
 //! assert_eq!(cont.next(10).unwrap_yielded(), 11);
 //! ```
+//!
+//! # Legacy API
+//!
+//! The [`InitSans`] trait is deprecated. Use the builder API and concrete types instead.
 
 use std::marker::PhantomData;
 
@@ -35,16 +44,53 @@ use crate::{
 };
 
 /// Result of initializing a coroutine that must yield before continuing.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Yielded<O, S>(pub O, pub S);
 
 impl<O, S> Yielded<O, S> {
-    /// Split the yielded pair into its components.
+    /// Splits the yielded pair into its components.
+    ///
+    /// Returns a tuple of `(output, continuation)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sans::prelude::*;
+    ///
+    /// let yielded = yielding(42).then(repeat(|x: i32| x + 1));
+    /// let (output, cont) = yielded.split();
+    /// assert_eq!(output, 42);
+    /// ```
     pub fn split(self) -> (O, S) {
         (self.0, self.1)
     }
 
-    /// Map the continuation stored inside this value.
+    /// Converts from `&Yielded<O, S>` to `Yielded<&O, &S>`.
+    ///
+    /// Useful for inspecting the yielded value and continuation without consuming them.
+    pub fn as_ref(&self) -> Yielded<&O, &S> {
+        Yielded(&self.0, &self.1)
+    }
+
+    /// Converts from `&mut Yielded<O, S>` to `Yielded<&mut O, &mut S>`.
+    ///
+    /// Useful for mutating the yielded value or continuation in place.
+    pub fn as_mut(&mut self) -> Yielded<&mut O, &mut S> {
+        Yielded(&mut self.0, &mut self.1)
+    }
+
+    /// Maps the continuation stored inside this value.
+    ///
+    /// This transforms the continuation coroutine while preserving the initial output.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sans::prelude::*;
+    ///
+    /// let yielded = yielding(10).then(once(|x: i32| x + 1));
+    /// let mapped = yielded.map_next(|sans| sans.map_yield(|x| x * 2));
+    /// ```
     pub fn map_next<F, T>(self, f: F) -> Yielded<O, T>
     where
         F: FnOnce(S) -> T,
@@ -53,7 +99,9 @@ impl<O, S> Yielded<O, S> {
         Yielded(output, f(next))
     }
 
-    /// Transform coroutine inputs before they reach the continuation.
+    /// Transforms coroutine inputs before they reach the continuation.
+    ///
+    /// This allows you to preprocess or convert input values before the coroutine processes them.
     pub fn map_input<I1, I2, F>(self, f: F) -> Yielded<O, MapInput<S, F>>
     where
         S: Sans<I2, O>,
@@ -63,7 +111,9 @@ impl<O, S> Yielded<O, S> {
         Yielded(output, next.map_input(f))
     }
 
-    /// Transform yielded values produced by the continuation.
+    /// Transforms yielded values produced by the continuation.
+    ///
+    /// This applies the transformation to both the initial output and all future yields from the continuation.
     pub fn map_yield<I, O2, F>(self, mut f: F) -> Yielded<O2, MapYield<S, F, I, O>>
     where
         S: Sans<I, O>,
@@ -74,7 +124,9 @@ impl<O, S> Yielded<O, S> {
         Yielded(mapped_output, next.map_yield(f))
     }
 
-    /// Transform the return value produced when the continuation completes.
+    /// Transforms the return value produced when the continuation completes.
+    ///
+    /// This doesn't affect yielded values, only the final return value.
     pub fn map_return<I, D2, F>(self, f: F) -> Yielded<O, MapReturn<S, F>>
     where
         S: Sans<I, O>,
@@ -84,7 +136,9 @@ impl<O, S> Yielded<O, S> {
         Yielded(output, next.map_return(f))
     }
 
-    /// Chain the continuation with another coroutine.
+    /// Chains the continuation with another coroutine.
+    ///
+    /// When the first coroutine completes, its return value is passed as input to the second coroutine.
     pub fn chain<I, R>(self, r: R) -> Yielded<O, Chain<S, R>>
     where
         S: Sans<I, O, Return = I>,
@@ -94,12 +148,14 @@ impl<O, S> Yielded<O, S> {
         Yielded(output, next.chain(r))
     }
 
-    /// Chain the continuation with a function that produces an `InitSans`.
-    pub fn and_then<I, T, F>(self, f: F) -> Yielded<O, AndThen<S, T::Next, F>>
+    /// Chains the continuation with a function that produces a `Yielded` or `ShortCircuit` result.
+    ///
+    /// This allows conditional continuation based on the first coroutine's return value.
+    pub fn and_then<I, T, F>(self, f: F) -> Yielded<O, AndThen<S, T, F>>
     where
         S: Sans<I, O, Return = I>,
-        T: InitSans<I, O>,
-        F: FnOnce(S::Return) -> T,
+        T: Sans<I, O>,
+        F: FnOnce(S::Return) -> ShortCircuit<Yielded<O, T>, T::Return>,
     {
         let (output, next) = self.split();
         Yielded(output, next.and_then(f))
@@ -119,14 +175,114 @@ impl<O, S> From<Yielded<O, S>> for (O, S) {
 }
 
 /// Initialization result that may already be complete.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ShortCircuit<S, R> {
     Pending(S),
     Complete(R),
 }
 
 impl<S, R> ShortCircuit<S, R> {
-    /// Map the pending continuation.
+    /// Returns `true` if this is a `Pending` variant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sans::prelude::*;
+    ///
+    /// let pending: ShortCircuit<i32, ()> = ShortCircuit::Pending(42);
+    /// assert!(pending.is_pending());
+    /// ```
+    pub fn is_pending(&self) -> bool {
+        matches!(self, ShortCircuit::Pending(_))
+    }
+
+    /// Returns `true` if this is a `Complete` variant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sans::prelude::*;
+    ///
+    /// let complete: ShortCircuit<i32, ()> = ShortCircuit::Complete(());
+    /// assert!(complete.is_complete());
+    /// ```
+    pub fn is_complete(&self) -> bool {
+        matches!(self, ShortCircuit::Complete(_))
+    }
+
+    /// Returns the pending continuation, panicking if this is `Complete`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called on a `Complete` variant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sans::prelude::*;
+    ///
+    /// let pending: ShortCircuit<i32, ()> = ShortCircuit::Pending(42);
+    /// assert_eq!(pending.unwrap_pending(), 42);
+    /// ```
+    pub fn unwrap_pending(self) -> S {
+        match self {
+            ShortCircuit::Pending(s) => s,
+            ShortCircuit::Complete(_) => panic!("called `unwrap_pending()` on a `Complete` value"),
+        }
+    }
+
+    /// Returns the completion value, panicking if this is `Pending`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called on a `Pending` variant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sans::prelude::*;
+    ///
+    /// let complete: ShortCircuit<i32, ()> = ShortCircuit::Complete(());
+    /// assert_eq!(complete.unwrap_complete(), ());
+    /// ```
+    pub fn unwrap_complete(self) -> R {
+        match self {
+            ShortCircuit::Pending(_) => panic!("called `unwrap_complete()` on a `Pending` value"),
+            ShortCircuit::Complete(r) => r,
+        }
+    }
+
+    /// Converts from `&ShortCircuit<S, R>` to `ShortCircuit<&S, &R>`.
+    ///
+    /// Useful for inspecting values without consuming the enum.
+    pub fn as_ref(&self) -> ShortCircuit<&S, &R> {
+        match self {
+            ShortCircuit::Pending(s) => ShortCircuit::Pending(s),
+            ShortCircuit::Complete(r) => ShortCircuit::Complete(r),
+        }
+    }
+
+    /// Converts from `&mut ShortCircuit<S, R>` to `ShortCircuit<&mut S, &mut R>`.
+    ///
+    /// Useful for mutating values in place.
+    pub fn as_mut(&mut self) -> ShortCircuit<&mut S, &mut R> {
+        match self {
+            ShortCircuit::Pending(s) => ShortCircuit::Pending(s),
+            ShortCircuit::Complete(r) => ShortCircuit::Complete(r),
+        }
+    }
+
+    /// Maps the pending continuation, leaving `Complete` unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sans::prelude::*;
+    ///
+    /// let pending: ShortCircuit<i32, ()> = ShortCircuit::Pending(42);
+    /// let mapped = pending.map_pending(|x| x * 2);
+    /// assert_eq!(mapped.unwrap_pending(), 84);
+    /// ```
     pub fn map_pending<F, T>(self, f: F) -> ShortCircuit<T, R>
     where
         F: FnOnce(S) -> T,
@@ -137,7 +293,17 @@ impl<S, R> ShortCircuit<S, R> {
         }
     }
 
-    /// Map the completion value.
+    /// Maps the completion value, leaving `Pending` unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sans::prelude::*;
+    ///
+    /// let complete: ShortCircuit<i32, i32> = ShortCircuit::Complete(42);
+    /// let mapped = complete.map_complete(|x| x * 2);
+    /// assert_eq!(mapped.unwrap_complete(), 84);
+    /// ```
     pub fn map_complete<F, R2>(self, f: F) -> ShortCircuit<S, R2>
     where
         F: FnOnce(R) -> R2,
@@ -148,7 +314,9 @@ impl<S, R> ShortCircuit<S, R> {
         }
     }
 
-    /// Convert into a `Result`, using `Ok` for `Pending` and `Err` for `Complete`.
+    /// Converts into a `Result`, using `Ok` for `Pending` and `Err` for `Complete`.
+    ///
+    /// This is useful when you want to treat early completion as an error condition.
     pub fn into_result(self) -> Result<S, R> {
         match self {
             ShortCircuit::Pending(s) => Ok(s),
@@ -191,17 +359,14 @@ impl<S, R> ShortCircuit<S, R> {
         self.map_pending(|s| s.chain(r))
     }
 
-    /// Chain the pending continuation with a function that produces an `InitSans`.
-    pub fn and_then<I, O, T, F>(self, f: F) -> ShortCircuit<AndThen<S, T::Next, F>, R>
+    /// Chain the pending continuation with a function that produces a `Yielded` or `ShortCircuit` result.
+    pub fn and_then<I, O, T, F>(self, f: F) -> ShortCircuit<AndThen<S, T, F>, R>
     where
         S: Sans<I, O, Return = I>,
-        T: InitSans<I, O, Return = R>,
-        F: FnOnce(S::Return) -> T,
+        T: Sans<I, O, Return = R>,
+        F: FnOnce(S::Return) -> ShortCircuit<Yielded<O, T>, R>,
     {
-        match self {
-            ShortCircuit::Pending(s) => ShortCircuit::Pending(s.and_then(f)),
-            ShortCircuit::Complete(r) => ShortCircuit::Complete(r),
-        }
+        self.map_pending(|s| s.and_then(f))
     }
 }
 
@@ -223,12 +388,44 @@ impl<S, R> From<Step<S, R>> for ShortCircuit<S, R> {
     }
 }
 
+impl<O, S, R> From<(O, S)> for ShortCircuit<Yielded<O, S>, R> {
+    fn from(value: (O, S)) -> Self {
+        ShortCircuit::Pending(Yielded(value.0, value.1))
+    }
+}
+
 /// Builder entry point for constructing initialization states.
+///
+/// Use this when you want to wrap a coroutine without yielding an initial value.
+/// You can then call `.yielding()` or `.shortcircuit()` on the result, or `.then(sans)` to wrap directly.
+///
+/// # Examples
+///
+/// ```
+/// use sans::prelude::*;
+///
+/// // Wrap a coroutine directly
+/// let coro = build::<i32, i32>().then(repeat(|x| x + 1));
+/// ```
 pub fn build<I, O>() -> Build<I, O> {
     Build(PhantomData)
 }
 
-/// Create a builder that yields an initial value.
+/// Creates a builder that yields an initial value.
+///
+/// This is the most common way to start building an initialization result. Call `.then(sans)`
+/// to attach a continuation coroutine.
+///
+/// # Examples
+///
+/// ```
+/// use sans::prelude::*;
+///
+/// // Yield 42 and then count up from there
+/// let Yielded(initial, mut cont) = yielding(42).then(repeat(|x: i32| x + 1));
+/// assert_eq!(initial, 42);
+/// assert_eq!(cont.next(10).unwrap_yielded(), 11);
+/// ```
 pub fn yielding<I, O>(output: O) -> YieldBuild<I, O> {
     YieldBuild {
         output,
@@ -236,13 +433,30 @@ pub fn yielding<I, O>(output: O) -> YieldBuild<I, O> {
     }
 }
 
-/// Create a builder that may short-circuit during initialization.
+/// Creates a builder that may short-circuit during initialization.
+///
+/// Use this when initialization might complete immediately without yielding a continuation.
+/// Call `.then(sans)` to provide a pending continuation, or `.returning(value)` to complete immediately.
+///
+/// # Examples
+///
+/// ```
+/// use sans::prelude::*;
+///
+/// // Create a pending short-circuit
+/// let pending = shortcircuit::<i32, i32, ()>().then(repeat(|x| x + 1));
+/// assert!(pending.is_pending());
+///
+/// // Create a complete short-circuit
+/// let complete: ShortCircuit<(), i32> = shortcircuit::<i32, i32, _>().returning(42);
+/// assert!(complete.is_complete());
+/// ```
 pub fn shortcircuit<I, O, R>() -> ShortCircuitBuild<I, O, R> {
     ShortCircuitBuild(PhantomData)
 }
 
 /// Builder state before any initialization behaviour is chosen.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Build<I, O>(PhantomData<(I, O)>);
 
 impl<I, O> Build<I, O> {
@@ -266,7 +480,7 @@ impl<I, O> Build<I, O> {
 }
 
 /// Builder state representing an initial yield with guaranteed continuation.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct YieldBuild<I, O> {
     output: O,
     marker: PhantomData<I>,
@@ -289,7 +503,7 @@ impl<I, O> YieldBuild<I, O> {
 }
 
 /// Builder state representing a potential short-circuit without initial yield.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct ShortCircuitBuild<I, O, R>(PhantomData<(I, O, R)>);
 
 impl<I, O, R> ShortCircuitBuild<I, O, R> {
@@ -301,8 +515,6 @@ impl<I, O, R> ShortCircuitBuild<I, O, R> {
     }
 
     pub fn returning<S>(self, done: R) -> ShortCircuit<S, R> {
-        let _ = PhantomData::<(I, O)>;
-        let _ = PhantomData::<S>;
         ShortCircuit::Complete(done)
     }
 
@@ -315,7 +527,7 @@ impl<I, O, R> ShortCircuitBuild<I, O, R> {
 }
 
 /// Builder state representing an initial yield that may short-circuit.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct YieldShortCircuitBuild<I, O, R> {
     output: O,
     marker: PhantomData<(I, R)>,
@@ -330,12 +542,14 @@ impl<I, O, R> YieldShortCircuitBuild<I, O, R> {
     }
 
     pub fn returning<S>(self, done: R) -> ShortCircuit<Yielded<O, S>, R> {
-        let _ = PhantomData::<S>;
         ShortCircuit::Complete(done)
     }
 }
 
 /// Computations that yield an initial value before processing input.
+///
+/// **Deprecated:** Use the builder API instead: `yielding(output).then(sans)` returns `Yielded<O, S>`,
+/// or use `ShortCircuit<Yielded<O, S>, R>` for fallible initialization.
 ///
 /// Unlike `Sans`, `InitSans` coroutines can produce output immediately, making them ideal
 /// for pipeline initialization or generators with seed values.
@@ -347,6 +561,10 @@ impl<I, O, R> YieldShortCircuitBuild<I, O, R> {
 /// let (initial, mut cont) = coro.init().unwrap_yielded();
 /// assert_eq!(initial, 42);
 /// ```
+#[deprecated(
+    since = "0.2.0",
+    note = "Use the builder API: yielding(output).then(sans) or ShortCircuit<Yielded<O, S>, R>"
+)]
 pub trait InitSans<I, O> {
     type Return;
     type Next: Sans<I, O, Return = Self::Return>;
@@ -670,7 +888,11 @@ mod tests {
 
         let appended = yielding::<i32, i32>(1)
             .then(once(|x: i32| x + 1))
-            .and_then(|value| init_once(value * 2, move |input: i32| input + value));
+            .and_then(|value| {
+                ShortCircuit::Pending(
+                    yielding(value * 2).then(repeat(move |input: i32| input + value)),
+                )
+            });
         let (initial, mut cont) = appended.into();
         assert_eq!(1, initial);
         assert_eq!(3, cont.next(2).unwrap_yielded());

@@ -31,7 +31,11 @@
 //! assert_eq!(sc.next(5).unwrap_yielded(), 10);
 //! assert_eq!(sc.next(-1).unwrap_complete(), Err("negative"));
 //! ```
-use crate::{InitSans, Sans, step::Step};
+use crate::{
+    InitSans, Sans,
+    init::{ShortCircuit as InitShortCircuit, Yielded},
+    step::Step,
+};
 
 /// Short-circuits on the first `Err` in a yielded `Result`.
 ///
@@ -102,16 +106,19 @@ where
     type Return = Result<S::Return, E>;
 
     fn init(self) -> Step<(O, Self::Next), Self::Return> {
-        match self.coro.init() {
-            Step::Yielded((Ok(o), next)) => Step::Yielded((
+        // Convert the result to InitShortCircuit for consistent handling
+        let sc: InitShortCircuit<Yielded<Result<O, E>, S::Next>, S::Return> =
+            self.coro.init().into();
+        match sc {
+            InitShortCircuit::Pending(Yielded(Ok(o), next)) => Step::Yielded((
                 o,
                 ShortCircuit {
                     coro: next,
                     _phantom: std::marker::PhantomData,
                 },
             )),
-            Step::Yielded((Err(e), _)) => Step::Complete(Err(e)),
-            Step::Complete(p) => Step::Complete(Ok(p)),
+            InitShortCircuit::Pending(Yielded(Err(e), _)) => Step::Complete(Err(e)),
+            InitShortCircuit::Complete(p) => Step::Complete(Ok(p)),
         }
     }
 }
@@ -202,14 +209,17 @@ where
                 Step::Complete(Ok(p)) => {
                     let f = f.take().expect("ok_map can only be used once");
                     let init_sans = f(p);
-                    match init_sans.init() {
-                        Step::Yielded((o, next)) => {
+                    // Convert the result to InitShortCircuit for consistent handling
+                    let sc: InitShortCircuit<Yielded<O, T::Next>, T::Return> =
+                        init_sans.init().into();
+                    match sc {
+                        InitShortCircuit::Pending(Yielded(o, next)) => {
                             *self = OkMap {
                                 state: OkMapState::OnSecond(next),
                             };
                             Step::Yielded(o)
                         }
-                        Step::Complete(ret) => Step::Complete(Ok(ret)),
+                        InitShortCircuit::Complete(ret) => Step::Complete(Ok(ret)),
                     }
                 }
             },
@@ -231,25 +241,29 @@ where
             unreachable!("OkMap::init called on OnSecond state")
         };
 
-        match coro.init() {
-            Step::Yielded((o, next)) => Step::Yielded((
+        // Convert the result to InitShortCircuit for consistent handling
+        let sc: InitShortCircuit<Yielded<O, S::Next>, Result<P, E>> = coro.init().into();
+        match sc {
+            InitShortCircuit::Pending(Yielded(o, next)) => Step::Yielded((
                 o,
                 OkMap {
                     state: OkMapState::OnFirst(next, f),
                 },
             )),
-            Step::Complete(Err(e)) => Step::Complete(Err(e)),
-            Step::Complete(Ok(p)) => {
+            InitShortCircuit::Complete(Err(e)) => Step::Complete(Err(e)),
+            InitShortCircuit::Complete(Ok(p)) => {
                 let f = f.expect("f should be available");
                 let init_sans = f(p);
-                match init_sans.init() {
-                    Step::Yielded((o, next)) => Step::Yielded((
+                // Convert the second init result too
+                let sc2: InitShortCircuit<Yielded<O, T::Next>, T::Return> = init_sans.init().into();
+                match sc2 {
+                    InitShortCircuit::Pending(Yielded(o, next)) => Step::Yielded((
                         o,
                         OkMap {
                             state: OkMapState::OnSecond(next),
                         },
                     )),
-                    Step::Complete(ret) => Step::Complete(Ok(ret)),
+                    InitShortCircuit::Complete(ret) => Step::Complete(Ok(ret)),
                 }
             }
         }
@@ -352,14 +366,17 @@ where
                 Step::Complete(Ok(p)) => {
                     let f = f.take().expect("ok_and_then can only be used once");
                     let init_sans = f(p);
-                    match init_sans.init() {
-                        Step::Yielded((o, next)) => {
+                    // Convert the result to InitShortCircuit for consistent handling
+                    let sc: InitShortCircuit<Yielded<O, T::Next>, Result<Q, E>> =
+                        init_sans.init().into();
+                    match sc {
+                        InitShortCircuit::Pending(Yielded(o, next)) => {
                             *self = OkAndThen {
                                 state: OkAndThenState::OnSecond(next),
                             };
                             Step::Yielded(o)
                         }
-                        Step::Complete(ret) => Step::Complete(ret),
+                        InitShortCircuit::Complete(ret) => Step::Complete(ret),
                     }
                 }
             },
@@ -381,25 +398,30 @@ where
             unreachable!("OkAndThen::init called on OnSecond state")
         };
 
-        match coro.init() {
-            Step::Yielded((o, next)) => Step::Yielded((
+        // Convert the result to InitShortCircuit for consistent handling
+        let sc: InitShortCircuit<Yielded<O, S::Next>, Result<P, E>> = coro.init().into();
+        match sc {
+            InitShortCircuit::Pending(Yielded(o, next)) => Step::Yielded((
                 o,
                 OkAndThen {
                     state: OkAndThenState::OnFirst(next, f),
                 },
             )),
-            Step::Complete(Err(e)) => Step::Complete(Err(e)),
-            Step::Complete(Ok(p)) => {
+            InitShortCircuit::Complete(Err(e)) => Step::Complete(Err(e)),
+            InitShortCircuit::Complete(Ok(p)) => {
                 let f = f.expect("f should be available");
                 let init_sans = f(p);
-                match init_sans.init() {
-                    Step::Yielded((o, next)) => Step::Yielded((
+                // Convert the second init result too
+                let sc2: InitShortCircuit<Yielded<O, T::Next>, Result<Q, E>> =
+                    init_sans.init().into();
+                match sc2 {
+                    InitShortCircuit::Pending(Yielded(o, next)) => Step::Yielded((
                         o,
                         OkAndThen {
                             state: OkAndThenState::OnSecond(next),
                         },
                     )),
-                    Step::Complete(ret) => Step::Complete(ret),
+                    InitShortCircuit::Complete(ret) => Step::Complete(ret),
                 }
             }
         }
@@ -507,16 +529,23 @@ where
     type Return = Result<R::Return, E>;
 
     fn init(mut self) -> Step<(O, Self::Next), Self::Return> {
-        match self.coro.take().expect("OkChain coro must be Some").init() {
-            Step::Yielded((o, next)) => Step::Yielded((
+        // Convert the result to InitShortCircuit for consistent handling
+        let sc: InitShortCircuit<Yielded<O, S::Next>, Result<I, E>> = self
+            .coro
+            .take()
+            .expect("OkChain coro must be Some")
+            .init()
+            .into();
+        match sc {
+            InitShortCircuit::Pending(Yielded(o, next)) => Step::Yielded((
                 o,
                 OkChain {
                     coro: Some(next),
                     next: self.next,
                 },
             )),
-            Step::Complete(Err(e)) => Step::Complete(Err(e)),
-            Step::Complete(Ok(i)) => match self.next.next(i) {
+            InitShortCircuit::Complete(Err(e)) => Step::Complete(Err(e)),
+            InitShortCircuit::Complete(Ok(i)) => match self.next.next(i) {
                 Step::Yielded(o) => Step::Yielded((
                     o,
                     OkChain {
@@ -605,11 +634,16 @@ where
     type Return = Result<T, E>;
 
     fn init(self) -> Step<(O, Self::Next), Self::Return> {
-        match self.coro.init() {
-            Step::Yielded((o, next)) => Step::Yielded((o, Flatten { coro: next })),
-            Step::Complete(Ok(Ok(t))) => Step::Complete(Ok(t)),
-            Step::Complete(Ok(Err(e))) => Step::Complete(Err(e)),
-            Step::Complete(Err(e)) => Step::Complete(Err(e)),
+        // Convert the result to InitShortCircuit for consistent handling
+        let sc: InitShortCircuit<Yielded<O, S::Next>, Result<Result<T, E>, E>> =
+            self.coro.init().into();
+        match sc {
+            InitShortCircuit::Pending(Yielded(o, next)) => {
+                Step::Yielded((o, Flatten { coro: next }))
+            }
+            InitShortCircuit::Complete(Ok(Ok(t))) => Step::Complete(Ok(t)),
+            InitShortCircuit::Complete(Ok(Err(e))) => Step::Complete(Err(e)),
+            InitShortCircuit::Complete(Err(e)) => Step::Complete(Err(e)),
         }
     }
 }

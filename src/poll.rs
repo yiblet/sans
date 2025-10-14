@@ -1,7 +1,10 @@
 //! Polling for both [`Sans`] and [`InitSans`]
 //!
 //! This module provides a universal adapter for polling both [`Sans`] and [`InitSans`].
-use crate::{InitSans, Sans, Step};
+use crate::{
+    InitSans, Sans, Step,
+    init::{ShortCircuit, Yielded},
+};
 
 enum PollState<S, O, R> {
     Sans(S),
@@ -149,11 +152,13 @@ where
     S: Sans<I, O>,
     T: InitSans<I, O, Next = S, Return = S::Return>,
 {
-    match init.init() {
-        Step::Yielded((o, s)) => Pollable {
+    // Convert the result to ShortCircuit for consistent handling
+    let sc: ShortCircuit<Yielded<O, S>, S::Return> = init.init().into();
+    match sc {
+        ShortCircuit::Pending(Yielded(o, s)) => Pollable {
             state: PollState::SansOutput(o, s),
         },
-        Step::Complete(r) => Pollable {
+        ShortCircuit::Complete(r) => Pollable {
             state: PollState::Return(r),
         },
     }

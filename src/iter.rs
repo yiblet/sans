@@ -26,7 +26,10 @@
 //! assert_eq!(iter.into_return(), Some(()));
 //! ```
 
-use crate::{InitSans, Sans, Step};
+use crate::{
+    InitSans, Sans, Step,
+    init::{ShortCircuit, Yielded},
+};
 
 /// Iterator adapter for [`Sans<(), O>`].
 ///
@@ -199,19 +202,23 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let state = self.state.take();
         match state {
-            InitSansIterState::Uninit(init_sans) => match init_sans.init() {
-                Step::Yielded((first, sans)) => {
-                    self.state = InitSansIterState::Active {
-                        first: Some(first),
-                        sans,
-                    };
-                    self.next()
+            InitSansIterState::Uninit(init_sans) => {
+                // Convert the result to ShortCircuit for consistent handling
+                let sc: ShortCircuit<Yielded<_, _>, _> = init_sans.init().into();
+                match sc {
+                    ShortCircuit::Pending(Yielded(first, sans)) => {
+                        self.state = InitSansIterState::Active {
+                            first: Some(first),
+                            sans,
+                        };
+                        self.next()
+                    }
+                    ShortCircuit::Complete(ret) => {
+                        self.state = InitSansIterState::Complete(ret);
+                        None
+                    }
                 }
-                Step::Complete(ret) => {
-                    self.state = InitSansIterState::Complete(ret);
-                    None
-                }
-            },
+            }
             InitSansIterState::Active { first, mut sans } => {
                 if let Some(first_value) = first {
                     self.state = InitSansIterState::Active { first: None, sans };

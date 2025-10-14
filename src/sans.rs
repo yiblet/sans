@@ -30,9 +30,9 @@ use std::{
 };
 
 use crate::{
-    InitSans,
     build::{Once, Repeat, once, repeat},
     compose::{AndThen, Chain, MapInput, MapReturn, MapYield, and_then, chain},
+    init::{ShortCircuit, Yielded},
     iter::SansIter,
     step::Step,
 };
@@ -65,13 +65,13 @@ pub trait Sans<I, O> {
     /// use sans::prelude::*;
     ///
     /// let mut coro = once(|x: i32| x * 2)
-    ///     .and_then(|val| init(val, repeat(move |x| x + val)));
+    ///     .and_then(|val| ShortCircuit::Pending(yielding(val).then(repeat(move |x| x + val))));
     /// ```
-    fn and_then<T, F>(self, f: F) -> AndThen<Self, T::Next, F>
+    fn and_then<T, F>(self, f: F) -> AndThen<Self, T, F>
     where
         Self: Sized + Sans<I, O, Return = I>,
-        T: InitSans<I, O>,
-        F: FnOnce(Self::Return) -> T,
+        T: Sans<I, O>,
+        F: FnOnce(Self::Return) -> ShortCircuit<Yielded<O, T>, T::Return>,
     {
         and_then(self, f)
     }

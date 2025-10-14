@@ -5,6 +5,12 @@
 // Core types
 pub use crate::{InitSans, Sans, Step};
 
+// Builder API for initialization
+pub use crate::init::{
+    Build, ShortCircuit, ShortCircuitBuild, YieldBuild, YieldShortCircuitBuild, Yielded, build,
+    shortcircuit, yielding,
+};
+
 // Most common constructors
 pub use crate::build::{from_fn, init, init_from_fn, init_once, init_repeat, once, repeat};
 
