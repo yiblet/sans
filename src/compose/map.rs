@@ -3,7 +3,7 @@
 //! This module provides [`MapInput`], [`MapYield`], and [`MapReturn`] combinators
 //! for adapting coroutines to different types.
 
-use crate::{InitSans, Sans, step::Step};
+use crate::{Sans, step::Step};
 
 /// Transforms input before passing it to the wrapped coroutine.
 ///
@@ -29,17 +29,6 @@ pub fn map_input<S, F>(f: F, coro: S) -> MapInput<S, F> {
     MapInput { f, coro }
 }
 
-/// Create a MapInput from an InitSans coroutine.
-///
-/// This is used when applying input transformation to a coroutine that yields immediately.
-pub fn init_map_input<I1, I2, O, S, F>(f: F, coro: S) -> MapInput<S, F>
-where
-    S: InitSans<I2, O>,
-    F: FnMut(I1) -> I2,
-{
-    MapInput { f, coro }
-}
-
 impl<I1, I2, O, S, F> Sans<I1, O> for MapInput<S, F>
 where
     S: Sans<I2, O>,
@@ -49,28 +38,6 @@ where
     fn next(&mut self, input: I1) -> Step<O, Self::Return> {
         let i2 = (self.f)(input);
         self.coro.next(i2)
-    }
-}
-
-impl<I1, I2, O, S, F> InitSans<I1, O> for MapInput<S, F>
-where
-    S: InitSans<I2, O>,
-    F: FnMut(I1) -> I2,
-{
-    type Next = MapInput<S::Next, F>;
-    type Return = S::Return;
-
-    fn init(self) -> Step<(O, Self::Next), Self::Return> {
-        match self.coro.init() {
-            Step::Yielded((o, next)) => Step::Yielded((
-                o,
-                MapInput {
-                    f: self.f,
-                    coro: next,
-                },
-            )),
-            Step::Complete(d) => Step::Complete(d),
-        }
     }
 }
 
@@ -107,21 +74,6 @@ where
     }
 }
 
-/// Create a MapYield from an InitSans coroutine.
-///
-/// This is used when applying yield transformation to a coroutine that yields immediately.
-pub fn init_map_yield<I, O1, O2, S, F>(f: F, coro: S) -> MapYield<S, F, I, O1>
-where
-    S: InitSans<I, O1>,
-    F: FnMut(O1) -> O2,
-{
-    MapYield {
-        f,
-        coro,
-        _phantom: std::marker::PhantomData,
-    }
-}
-
 impl<I, O1, O2, S, F> Sans<I, O2> for MapYield<S, F, I, O1>
 where
     S: Sans<I, O1>,
@@ -132,33 +84,6 @@ where
         match self.coro.next(input) {
             Step::Yielded(o1) => Step::Yielded((self.f)(o1)),
             Step::Complete(a) => Step::Complete(a),
-        }
-    }
-}
-
-impl<I, O1, O2, S, F> InitSans<I, O2> for MapYield<S, F, I, O1>
-where
-    S: InitSans<I, O1>,
-    F: FnMut(O1) -> O2,
-{
-    type Next = MapYield<S::Next, F, I, O1>;
-    type Return = S::Return;
-
-    fn init(self) -> Step<(O2, Self::Next), Self::Return> {
-        match self.coro.init() {
-            Step::Yielded((o1, next)) => {
-                let mut f = self.f;
-                let o2 = f(o1);
-                Step::Yielded((
-                    o2,
-                    MapYield {
-                        f,
-                        coro: next,
-                        _phantom: std::marker::PhantomData,
-                    },
-                ))
-            }
-            Step::Complete(d) => Step::Complete(d),
         }
     }
 }
@@ -190,17 +115,6 @@ pub fn map_return<S, F>(f: F, coro: S) -> MapReturn<S, F> {
     MapReturn { f, coro }
 }
 
-/// Create a MapReturn from an InitSans coroutine.
-///
-/// This is used when applying return transformation to a coroutine that yields immediately.
-pub fn init_map_return<I, O, D1, D2, S, F>(f: F, coro: S) -> MapReturn<S, F>
-where
-    S: InitSans<I, O, Return = D1>,
-    F: FnMut(D1) -> D2,
-{
-    MapReturn { f, coro }
-}
-
 impl<I, O, D1, D2, S, F> Sans<I, O> for MapReturn<S, F>
 where
     S: Sans<I, O, Return = D1>,
@@ -215,70 +129,9 @@ where
     }
 }
 
-impl<I, O, D1, D2, S, F> InitSans<I, O> for MapReturn<S, F>
-where
-    S: InitSans<I, O, Return = D1>,
-    F: FnMut(D1) -> D2,
-{
-    type Next = MapReturn<S::Next, F>;
-    type Return = D2;
-
-    fn init(self) -> Step<(O, Self::Next), Self::Return> {
-        match self.coro.init() {
-            Step::Yielded((o, next)) => Step::Yielded((
-                o,
-                MapReturn {
-                    f: self.f,
-                    coro: next,
-                },
-            )),
-            Step::Complete(d1) => {
-                let mut f = self.f;
-                Step::Complete(f(d1))
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::InitSans;
-    use crate::build::repeat;
-
-    #[test]
-    fn test_map_input_and_map_yield_pipeline() {
-        let mut total = 0_i64;
-        let init_coro = (
-            0_i64,
-            repeat(move |delta: i64| {
-                total += delta;
-                total
-            }),
-        )
-            .map_input(|cmd: &str| -> i64 {
-                let mut parts = cmd.split_whitespace();
-                let op = parts.next().expect("operation must exist");
-                let amount: i64 = parts
-                    .next()
-                    .expect("amount must exist")
-                    .parse()
-                    .expect("amount must parse");
-                match op {
-                    "add" => amount,
-                    "sub" => -amount,
-                    _ => panic!("unsupported op: {op}"),
-                }
-            })
-            .map_yield(|value: i64| format!("total={value}"));
-
-        let (initial_total, mut coro) = init_coro.init().unwrap_yielded();
-
-        assert_eq!("total=0", initial_total);
-        assert_eq!("total=5", coro.next("add 5").unwrap_yielded());
-        assert_eq!("total=2", coro.next("sub 3").unwrap_yielded());
-        assert_eq!("total=7", coro.next("add 5").unwrap_yielded());
-    }
 
     #[test]
     fn test_map_input_basic() {

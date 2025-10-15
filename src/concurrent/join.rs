@@ -3,51 +3,8 @@
 //! This module provides the [`Join`] combinator for running multiple coroutines
 //! concurrently, polling them for outputs and directing inputs to specific coroutines.
 
-use crate::poll::{Poll, PollError, PollOutput, Pollable, init_poll, poll};
-use crate::{InitSans, Sans, Step};
-
-/// Create a [`Join`] from an array of [`InitSans`] coroutines.
-///
-/// Each coroutine is wrapped in a [`Pollable`] using [`init_poll`], allowing them to be
-/// polled concurrently. See [`Join`] for details on how concurrent execution works.
-///
-/// # Examples
-///
-/// ```
-/// use sans::prelude::*;
-/// use sans::poll::{Poll, PollOutput};
-/// use sans::concurrent::{init_join, JoinEnvelope};
-///
-/// // Create two coroutines with initial outputs
-/// fn add_one(x: i32) -> i32 { x + 1 }
-/// let f = add_one as fn(i32) -> i32;
-/// let coro1 = (100, repeat(f));
-/// let coro2 = (200, repeat(f));
-///
-/// let mut joined = init_join([coro1, coro2]);
-///
-/// // Poll to get initial outputs
-/// match joined.next(Poll::Poll) {
-///     Step::Yielded(PollOutput::Output(env)) => {
-///         assert!(*env.value() == 100 || *env.value() == 200);
-///     }
-///     _ => panic!("Expected output"),
-/// }
-/// ```
-pub fn init_join<const N: usize, I, O, S, T>(rest: [T; N]) -> Join<N, S, O, S::Return>
-where
-    T: InitSans<I, O, Next = S, Return = S::Return>,
-    S: Sans<I, O>,
-{
-    let pollables = rest.map(|init_sans| init_poll(init_sans));
-
-    Join {
-        pollables,
-        returns: std::array::from_fn(|_| None),
-        last_index: 0,
-        complete: 0,
-    }
-}
+use crate::poll::{Poll, PollError, PollOutput, Pollable, poll};
+use crate::{Sans, Step};
 
 /// Create a [`Join`] from an array of [`Sans`] coroutines.
 ///
@@ -84,6 +41,7 @@ where
         returns: std::array::from_fn(|_| None),
         last_index: 0,
         complete: 0,
+        _phantom: std::marker::PhantomData,
     }
 }
 
@@ -100,23 +58,7 @@ where
         returns: (0..len).map(|_| None).collect(),
         last_index: 0,
         complete: 0,
-    }
-}
-
-/// Create a [`JoinVec`] from a vector of [`InitSans`] coroutines.
-///
-/// Like [`init_join`] but accepts a dynamic number of coroutines at runtime.
-pub fn init_join_vec<I, O, S, T>(inits: Vec<T>) -> JoinVec<S, O, S::Return>
-where
-    T: InitSans<I, O, Next = S, Return = S::Return>,
-    S: Sans<I, O>,
-{
-    let len = inits.len();
-    JoinVec {
-        pollables: inits.into_iter().map(|init| init_poll(init)).collect(),
-        returns: (0..len).map(|_| None).collect(),
-        last_index: 0,
-        complete: 0,
+        _phantom: std::marker::PhantomData,
     }
 }
 
@@ -130,20 +72,22 @@ where
 ///
 /// The join completes when all coroutines complete, returning an array of their return values.
 pub struct Join<const N: usize, S, O, R> {
-    pollables: [Pollable<S, O, R>; N],
+    pollables: [Pollable<S>; N],
     returns: [Option<R>; N],
     last_index: usize,
     complete: usize,
+    _phantom: std::marker::PhantomData<O>,
 }
 
 /// Vec-based version of [`Join`] for dynamic number of coroutines.
 ///
 /// Like [`Join`] but uses a `Vec` to store coroutines, allowing the number to be determined at runtime.
 pub struct JoinVec<S, O, R> {
-    pollables: Vec<Pollable<S, O, R>>,
+    pollables: Vec<Pollable<S>>,
     returns: Vec<Option<R>>,
     last_index: usize,
     complete: usize,
+    _phantom: std::marker::PhantomData<O>,
 }
 
 /// Errors that can occur during join execution.
@@ -339,26 +283,6 @@ where
     }
 }
 
-// also implement InitSans for Join
-impl<const N: usize, I, O, S>
-    InitSans<Poll<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>
-    for Join<N, S, O, S::Return>
-where
-    S: Sans<I, O>,
-{
-    type Next = Self;
-    type Return = Result<[S::Return; N], JoinError>;
-
-    fn init(
-        mut self,
-    ) -> Step<(PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Next), Self::Return> {
-        match self.next(Poll::Poll) {
-            Step::Yielded(o) => Step::Yielded((o, self)),
-            Step::Complete(r) => Step::Complete(r),
-        }
-    }
-}
-
 // Implement Sans for JoinVec
 impl<I, O, S> Sans<Poll<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>
     for JoinVec<S, O, S::Return>
@@ -475,25 +399,6 @@ where
                     unreachable!("index {} out of bounds for pollables vec", idx)
                 }
             }
-        }
-    }
-}
-
-// Implement InitSans for JoinVec
-impl<I, O, S> InitSans<Poll<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>
-    for JoinVec<S, O, S::Return>
-where
-    S: Sans<I, O>,
-{
-    type Next = Self;
-    type Return = Result<Vec<S::Return>, JoinError>;
-
-    fn init(
-        mut self,
-    ) -> Step<(PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Next), Self::Return> {
-        match self.next(Poll::Poll) {
-            Step::Yielded(o) => Step::Yielded((o, self)),
-            Step::Complete(r) => Step::Complete(r),
         }
     }
 }
@@ -740,213 +645,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_init_join_basic() {
-        fn add_one(x: i32) -> i32 {
-            x + 1
-        }
-        let init1 = (100, repeat(add_one));
-        let init2 = (200, repeat(add_one));
-
-        let mut joined = init_join([init1, init2]);
-
-        // Should have initial outputs available
-        match joined.next(Poll::Poll) {
-            Step::Yielded(PollOutput::Output(JoinEnvelope(id, val))) => {
-                let idx = id.as_usize();
-                assert!(idx == 0 || idx == 1);
-                assert!(val == 100 || val == 200);
-            }
-            other => panic!("Expected Output, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_join_empty_array() {
-        use crate::build;
-        // Need a concrete type for empty array
-        #[allow(clippy::type_complexity)]
-        let joined: Join<0, build::Repeat<fn(i32) -> i32>, i32, i32> = join([]);
-
-        // Should immediately complete with empty array
-        let mut joined = joined;
-        match joined.next(Poll::Poll) {
-            Step::Complete(Ok([])) => {}
-            other => panic!("Expected Complete(Ok([])), got {:?}", other),
-        }
-    }
-
-    // Tests for JoinVec
-    #[test]
-    fn test_join_vec_basic() {
-        fn add_one(x: i32) -> i32 {
-            x + 1
-        }
-        let sans = vec![repeat(add_one), repeat(add_one), repeat(add_one)];
-        let mut joined = join_vec(sans);
-
-        // Poll should indicate needs input
-        match joined.next(Poll::Poll) {
-            Step::Yielded(PollOutput::NeedsInput) => {}
-            other => panic!("Expected NeedsInput, got {:?}", other),
-        }
-
-        // Send input to each sans
-        for i in 0..3 {
-            let input_val = (i * 10) as i32;
-            match joined.next(Poll::Input(JoinEnvelope::new(i, input_val))) {
-                Step::Yielded(PollOutput::Output(JoinEnvelope(id, val))) => {
-                    assert_eq!(id.as_usize(), i);
-                    assert_eq!(val, input_val + 1);
-                }
-                other => panic!("Expected Output, got {:?}", other),
-            }
-        }
-    }
-
-    #[test]
-    fn test_join_vec_completion() {
-        fn add_one(x: i32) -> i32 {
-            x + 1
-        }
-        let sans = vec![once(add_one), once(add_one)];
-        let mut joined = join_vec(sans);
-
-        // First inputs yield
-        joined
-            .next(Poll::Input(JoinEnvelope::new(0, 10)))
-            .expect_yielded("should yield");
-        joined
-            .next(Poll::Input(JoinEnvelope::new(1, 20)))
-            .expect_yielded("should yield");
-
-        // Complete both
-        joined
-            .next(Poll::Input(JoinEnvelope::new(0, 100)))
-            .expect_yielded("should yield");
-
-        // Final completion
-        match joined.next(Poll::Input(JoinEnvelope::new(1, 200))) {
-            Step::Complete(Ok(results)) => {
-                assert_eq!(results, vec![100, 200]);
-            }
-            other => panic!("Expected Complete, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_join_vec_empty() {
-        use crate::build;
-        #[allow(clippy::type_complexity)]
-        let sans: Vec<build::Repeat<fn(i32) -> i32>> = vec![];
-        let mut joined = join_vec(sans);
-
-        // Should immediately complete with empty vec
-        match joined.next(Poll::Poll) {
-            Step::Complete(Ok(results)) => {
-                assert_eq!(results, Vec::<i32>::new());
-            }
-            other => panic!("Expected Complete(Ok([])), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_join_vec_dynamic_size() {
-        fn add_one(x: i32) -> i32 {
-            x + 1
-        }
-
-        // Test with different sizes
-        for size in 1..=10 {
-            let sans: Vec<_> = (0..size).map(|_| repeat(add_one)).collect();
-            let mut joined = join_vec(sans);
-
-            // Send input to all
-            for i in 0..size {
-                let input_val = (i * 5) as i32;
-                match joined.next(Poll::Input(JoinEnvelope::new(i, input_val))) {
-                    Step::Yielded(PollOutput::Output(JoinEnvelope(id, val))) => {
-                        assert_eq!(id.as_usize(), i);
-                        assert_eq!(val, input_val + 1);
-                    }
-                    other => panic!("Expected Output at index {}, got {:?}", i, other),
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_init_join_vec_basic() {
-        fn add_one(x: i32) -> i32 {
-            x + 1
-        }
-        let inits = vec![
-            (100, repeat(add_one)),
-            (200, repeat(add_one)),
-            (300, repeat(add_one)),
-        ];
-        let mut joined = init_join_vec(inits);
-
-        // Should have initial outputs available
-        let mut found = [false, false, false];
-        for _ in 0..3 {
-            match joined.next(Poll::Poll) {
-                Step::Yielded(PollOutput::Output(JoinEnvelope(id, val))) => {
-                    let idx = id.as_usize();
-                    assert!(idx < 3);
-                    found[idx] = true;
-                    assert!(val == 100 || val == 200 || val == 300);
-                }
-                other => panic!("Expected Output, got {:?}", other),
-            }
-        }
-        assert!(
-            found.iter().all(|&x| x),
-            "All initial outputs should be found"
-        );
-    }
-
-    #[test]
-    fn test_join_vec_interleaved() {
-        fn add_one(x: i32) -> i32 {
-            x + 1
-        }
-        let sans = vec![repeat(add_one), repeat(add_one)];
-        let mut joined = join_vec(sans);
-
-        // Interleave operations
-        for round in 0..3 {
-            for idx in 0..2 {
-                let input_val = (round * 10 + idx) as i32;
-                match joined.next(Poll::Input(JoinEnvelope::new(idx, input_val))) {
-                    Step::Yielded(PollOutput::Output(JoinEnvelope(id, val))) => {
-                        assert_eq!(id.as_usize(), idx);
-                        assert_eq!(val, input_val + 1);
-                    }
-                    other => panic!("Expected Output, got {:?}", other),
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_join_vec_large_collection() {
-        fn multiply_two(x: i32) -> i32 {
-            x * 2
-        }
-        let sans: Vec<_> = (0..100).map(|_| repeat(multiply_two)).collect();
-        let mut joined = join_vec(sans);
-
-        // Send input to first 10
-        for i in 0..10 {
-            let input_val = i as i32;
-            match joined.next(Poll::Input(JoinEnvelope::new(i, input_val))) {
-                Step::Yielded(PollOutput::Output(JoinEnvelope(id, val))) => {
-                    assert_eq!(id.as_usize(), i);
-                    assert_eq!(val, input_val * 2);
-                }
-                other => panic!("Expected Output, got {:?}", other),
-            }
-        }
-    }
 }

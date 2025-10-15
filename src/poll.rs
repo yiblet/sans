@@ -1,65 +1,19 @@
-//! Polling for both [`Sans`] and [`InitSans`]
+//! Polling for [`Sans`]
 //!
-//! This module provides a universal adapter for polling both [`Sans`] and [`InitSans`].
-use crate::{
-    InitSans, Sans, Step,
-    init::{ShortCircuit, Yielded},
-};
+//! This module provides an adapter for polling [`Sans`] coroutines.
+use crate::{Sans, Step};
 
-enum PollState<S, O, R> {
+enum PollState<S> {
     Sans(S),
-    SansOutput(O, S),
-    Return(R),
     Completed,
-}
-
-impl<S, O, R> PollState<S, O, R> {
-    fn take_output(&mut self) -> Option<O> {
-        match self {
-            PollState::SansOutput(_, _) => {
-                let s = std::mem::replace(self, PollState::Completed);
-                match s {
-                    PollState::SansOutput(o, s) => {
-                        *self = PollState::Sans(s);
-                        Some(o)
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
-    fn take_return(&mut self) -> Option<R> {
-        match self {
-            PollState::Return(_) => {
-                let r = std::mem::replace(self, PollState::Completed);
-                match r {
-                    PollState::Return(r) => Some(r),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
 }
 
 /// A coroutine wrapper that allows polling for outputs and asynchronously providing inputs.
 ///
-/// Created via [`poll`] or [`init_poll`]. Wraps a [`Sans`] coroutine to enable explicit
+/// Created via [`poll`]. Wraps a [`Sans`] coroutine to enable explicit
 /// control over when inputs are provided and outputs are retrieved.
-///
-/// # Universal Adapter Property
-///
-/// `Pollable` uniquely implements both [`Sans`] and [`InitSans`] for the same input/output types,
-/// making it a universal adapter. This allows you to:
-/// - Wrap a [`Sans`] to use where an [`InitSans`] is required
-/// - Wrap an [`InitSans`] to use where a [`Sans`] is required
-///
-/// This adapter capability is useful beyond concurrent execution - anywhere you need to bridge
-/// between APIs expecting different trait bounds.
-pub struct Pollable<S, O, R> {
-    state: PollState<S, O, R>,
+pub struct Pollable<S> {
+    state: PollState<S>,
 }
 
 /// Input type for [`Pollable`] coroutines.
@@ -107,9 +61,6 @@ impl std::error::Error for PollError {}
 /// The resulting [`Pollable`] can be polled with [`Poll::Poll`] to check for available
 /// output, or sent inputs with [`Poll::Input`].
 ///
-/// **Note:** Because [`Pollable`] implements both [`Sans`] and [`InitSans`], this also serves
-/// as an adapter to use a [`Sans`] where an [`InitSans`] is required.
-///
 /// # Examples
 ///
 /// ```
@@ -131,7 +82,7 @@ impl std::error::Error for PollError {}
 ///     _ => panic!("Expected Output(6)"),
 /// }
 /// ```
-pub fn poll<I, S, O, R>(coro: S) -> Pollable<S, O, R>
+pub fn poll<I, S, O>(coro: S) -> Pollable<S>
 where
     S: Sans<I, O>,
 {
@@ -140,31 +91,7 @@ where
     }
 }
 
-/// Wrap an [`InitSans`] coroutine in a [`Pollable`], handling the initial output.
-///
-/// If the coroutine has an initial output, it will be available on the first poll.
-/// If it completes immediately, the [`Pollable`] will return that completion.
-///
-/// **Note:** Because [`Pollable`] implements both [`Sans`] and [`InitSans`], this also serves
-/// as an adapter to use an [`InitSans`] where a [`Sans`] is required.
-pub fn init_poll<I, S, O, T>(init: T) -> Pollable<S, O, S::Return>
-where
-    S: Sans<I, O>,
-    T: InitSans<I, O, Next = S, Return = S::Return>,
-{
-    // Convert the result to ShortCircuit for consistent handling
-    let sc: ShortCircuit<Yielded<O, S>, S::Return> = init.init().into();
-    match sc {
-        ShortCircuit::Pending(Yielded(o, s)) => Pollable {
-            state: PollState::SansOutput(o, s),
-        },
-        ShortCircuit::Complete(r) => Pollable {
-            state: PollState::Return(r),
-        },
-    }
-}
-
-impl<I, O, S> Sans<Poll<I>, PollOutput<I, O>> for Pollable<S, O, S::Return>
+impl<I, O, S> Sans<Poll<I>, PollOutput<I, O>> for Pollable<S>
 where
     S: Sans<I, O>,
 {
@@ -180,35 +107,7 @@ where
                     Step::Complete(Ok(a))
                 }
             },
-            (PollState::SansOutput(_, _), Poll::Poll) => {
-                let o = self.state.take_output().unwrap(); // SAFETY: we know it's in the sans output state
-                Step::Yielded(PollOutput::Output(o))
-            }
-            (PollState::SansOutput(_, _), Poll::Input(i2)) => {
-                Step::Yielded(PollOutput::NeedsPoll(i2))
-            }
-            (PollState::Return(_), Poll::Poll) => {
-                let r = self.state.take_return().unwrap(); // SAFETY: we know it's in the return state
-                Step::Complete(Ok(r))
-            }
-            (PollState::Return(_), Poll::Input(i2)) => Step::Yielded(PollOutput::NeedsPoll(i2)),
             (PollState::Completed, _) => Step::Complete(Err(PollError::AlreadyComplete)),
-        }
-    }
-}
-
-// implment InitSans for Pollable
-impl<I, O, S> InitSans<Poll<I>, PollOutput<I, O>> for Pollable<S, O, S::Return>
-where
-    S: Sans<I, O>,
-{
-    type Next = Self;
-    type Return = Result<S::Return, PollError>;
-
-    fn init(mut self) -> Step<(PollOutput<I, O>, Self::Next), Self::Return> {
-        match self.next(Poll::Poll) {
-            Step::Yielded(o) => Step::Yielded((o, self)),
-            Step::Complete(r) => Step::Complete(r),
         }
     }
 }
@@ -307,51 +206,6 @@ mod tests {
         match pollable.next(Poll::Input(20)) {
             Step::Complete(Err(PollError::AlreadyComplete)) => {}
             _ => panic!("Expected AlreadyComplete error"),
-        }
-    }
-
-    #[test]
-    fn test_poll_needs_poll_with_init() {
-        // Use init_poll with a tuple to create SansOutput state
-        let init = (100, repeat(|x: i32| x * 3));
-        let mut pollable = init_poll(init);
-
-        // Send input while in SansOutput state (before polling) - should get NeedsPoll
-        match pollable.next(Poll::Input(5)) {
-            Step::Yielded(PollOutput::NeedsPoll(5)) => {}
-            other => panic!("Expected NeedsPoll(5), got {:?}", other),
-        }
-
-        // Now poll to get the initial output
-        match pollable.next(Poll::Poll) {
-            Step::Yielded(PollOutput::Output(100)) => {}
-            other => panic!("Expected Output(100), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_init_poll_with_tuple_init() {
-        use crate::build::repeat;
-
-        let init = (100, repeat(|x: i32| x + 1));
-        let mut pollable = init_poll(init);
-
-        // First poll should yield the initial output
-        match pollable.next(Poll::Poll) {
-            Step::Yielded(PollOutput::Output(100)) => {}
-            other => panic!("Expected Output(100), got {:?}", other),
-        }
-
-        // Now it should need input
-        match pollable.next(Poll::Poll) {
-            Step::Yielded(PollOutput::NeedsInput) => {}
-            other => panic!("Expected NeedsInput, got {:?}", other),
-        }
-
-        // Send input
-        match pollable.next(Poll::Input(5)) {
-            Step::Yielded(PollOutput::Output(6)) => {}
-            other => panic!("Expected Output(6), got {:?}", other),
         }
     }
 

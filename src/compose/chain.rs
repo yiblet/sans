@@ -4,8 +4,8 @@
 //! coroutines one after another.
 
 use crate::{
-    InitSans, Sans,
-    init::{ShortCircuit, Yielded},
+    Sans,
+    init::Yielded,
     step::Step,
 };
 
@@ -137,17 +137,6 @@ where
     Chain(Some(l), r)
 }
 
-/// Create a chain from an InitSans coroutine and a coroutine.
-///
-/// This is used when chaining an initial coroutine (that yields immediately) with a coroutine.
-pub fn init_chain<I, O, L, R>(l: L, r: R) -> Chain<L, R>
-where
-    L: InitSans<I, O, Return = I>,
-    R: Sans<I, O>,
-{
-    Chain(Some(l), r)
-}
-
 /// Chains two coroutines sequentially.
 ///
 /// Created via `chain()` or `first_chain()`. The first coroutine is dropped from memory
@@ -174,26 +163,6 @@ where
     }
 }
 
-impl<I, O, L, R> InitSans<I, O> for Chain<L, R>
-where
-    L: InitSans<I, O, Return = I>,
-    R: Sans<I, O>,
-{
-    type Next = either::Either<Chain<L::Next, R>, R>;
-    type Return = R::Return;
-
-    fn init(mut self) -> Step<(O, Self::Next), Self::Return> {
-        match self.0.take().expect("Chain left side must be Some").init() {
-            Step::Yielded((o, next)) => {
-                Step::Yielded((o, either::Either::Left(Chain(Some(next), self.1))))
-            }
-            Step::Complete(d) => match self.1.next(d) {
-                Step::Yielded(o) => Step::Yielded((o, either::Either::Right(self.1))),
-                Step::Complete(r) => Step::Complete(r),
-            },
-        }
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;

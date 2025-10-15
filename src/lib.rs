@@ -25,6 +25,7 @@
 //!
 //! ```
 //! use sans::prelude::*;
+//! use sans::run::handle;
 //!
 //! // Build a pipeline using the builder API
 //! let init_result = yielding(10)  // Yields 10 initially
@@ -36,7 +37,7 @@
 //! assert_eq!(initial, 10);
 //!
 //! // Drive the pipeline with responses to each yield
-//! let result = handle((initial, pipeline), |output| {
+//! let result = handle(pipeline, initial, |output| {
 //!     // Respond to yields
 //!     if output < 100 { output } else { 0 }
 //! });
@@ -94,6 +95,5 @@ pub mod sequential;
 pub mod prelude;
 
 // Re-export essential types at root
-pub use init::InitSans;
 pub use sans::{PoisonError, Sans};
 pub use step::Step;
