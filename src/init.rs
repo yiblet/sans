@@ -31,16 +31,14 @@
 //!
 //! The [`InitSans`] trait is deprecated. Use the builder API and concrete types instead.
 
-use std::marker::PhantomData;
-
 use crate::{
-    Sans, Step,
-    build::{Once, Repeat, once, repeat},
+    build::{once, repeat, Once, Repeat},
     compose::{
-        AndThen, Chain, MapInput, MapReturn, MapYield, init_chain, init_map_input, init_map_return,
-        init_map_yield,
+        init_chain, init_map_input, init_map_return, init_map_yield, AndThen, Chain, MapInput,
+        MapReturn, MapYield,
     },
     iter::InitSansIter,
+    Sans, Step,
 };
 
 /// Result of initializing a coroutine that must yield before continuing.
@@ -153,7 +151,7 @@ impl<O, S> Yielded<O, S> {
     /// This allows chaining based on the first coroutine's return value.
     pub fn and_then<I, T, F>(self, f: F) -> Yielded<O, AndThen<S, T, F>>
     where
-        S: Sans<I, O, Return = I>,
+        S: Sans<I, O>,
         T: Sans<I, O>,
         F: FnOnce(S::Return) -> Yielded<O, T>,
     {
@@ -271,7 +269,6 @@ impl<S, R> ShortCircuit<S, R> {
             ShortCircuit::Complete(r) => ShortCircuit::Complete(r),
         }
     }
-
     /// Maps the pending continuation, leaving `Complete` unchanged.
     ///
     /// # Examples
@@ -289,6 +286,33 @@ impl<S, R> ShortCircuit<S, R> {
     {
         match self {
             ShortCircuit::Pending(s) => ShortCircuit::Pending(f(s)),
+            ShortCircuit::Complete(r) => ShortCircuit::Complete(r),
+        }
+    }
+
+    /// Flat maps the pending continuation, leaving `Complete` unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sans::prelude::*;
+    ///
+    /// let pending: ShortCircuit<i32, ()> = ShortCircuit::Pending(42);
+    /// let flat_mapped = pending.flat_map_pending(|x| {
+    ///     if x > 0 {
+    ///         ShortCircuit::Pending(x * 2)
+    ///     } else {
+    ///         ShortCircuit::Complete(())
+    ///     }
+    /// });
+    /// assert_eq!(flat_mapped.unwrap_pending(), 84);
+    /// ```
+    pub fn flat_map_pending<F, T>(self, f: F) -> ShortCircuit<T, R>
+    where
+        F: FnOnce(S) -> ShortCircuit<T, R>,
+    {
+        match self {
+            ShortCircuit::Pending(s) => f(s),
             ShortCircuit::Complete(r) => ShortCircuit::Complete(r),
         }
     }
@@ -343,11 +367,15 @@ impl<S, R> ShortCircuit<S, R> {
     }
 
     /// Transform the completion value.
-    pub fn map_return<F, R2>(self, f: F) -> ShortCircuit<S, R2>
+    pub fn map_return<I, O, F, R2>(self, mut f: F) -> ShortCircuit<MapReturn<S, F>, R2>
     where
-        F: FnOnce(R) -> R2,
+        F: FnMut(R) -> R2,
+        S: Sans<I, O, Return = R>,
     {
-        self.map_complete(f)
+        match self {
+            ShortCircuit::Pending(s) => ShortCircuit::Pending(s.map_return(f)),
+            ShortCircuit::Complete(r) => ShortCircuit::Complete(f(r)),
+        }
     }
 
     /// Chain the pending continuation with another coroutine.
@@ -362,7 +390,7 @@ impl<S, R> ShortCircuit<S, R> {
     /// Chain the pending continuation with a function that produces a `Yielded` result.
     pub fn and_then<I, O, T, F>(self, f: F) -> ShortCircuit<AndThen<S, T, F>, R>
     where
-        S: Sans<I, O, Return = I>,
+        S: Sans<I, O, Return = R>,
         T: Sans<I, O, Return = R>,
         F: FnOnce(S::Return) -> Yielded<O, T>,
     {
@@ -440,16 +468,16 @@ pub fn yielding<O>(output: O) -> YieldBuild<O> {
 /// ```
 /// use sans::prelude::*;
 ///
-/// // Create a pending short-circuit
-/// let pending = shortcircuit::<()>().then(repeat(|x: i32| x + 1));
+/// // Create a pending short-circuit (type annotation provides R)
+/// let pending: ShortCircuit<_, ()> = shortcircuit().then(repeat(|x: i32| x + 1));
 /// assert!(pending.is_pending());
 ///
 /// // Create a complete short-circuit
-/// let complete: ShortCircuit<(), i32> = shortcircuit::<_>().returning(42);
+/// let complete: ShortCircuit<(), i32> = shortcircuit().returning(42);
 /// assert!(complete.is_complete());
 /// ```
-pub fn shortcircuit<R>() -> ShortCircuitBuild<R> {
-    ShortCircuitBuild(PhantomData)
+pub fn shortcircuit() -> ShortCircuitBuild {
+    ShortCircuitBuild
 }
 
 /// Builder state before any initialization behaviour is chosen.
@@ -461,8 +489,8 @@ impl Build {
         YieldBuild { output }
     }
 
-    pub fn shortcircuit<R>(self) -> ShortCircuitBuild<R> {
-        ShortCircuitBuild(PhantomData)
+    pub fn shortcircuit(self) -> ShortCircuitBuild {
+        ShortCircuitBuild
     }
 
     pub fn then<I, O, S>(self, sans: S) -> S
@@ -487,54 +515,49 @@ impl<O> YieldBuild<O> {
         Yielded(self.output, sans)
     }
 
-    pub fn shortcircuit<R>(self) -> YieldShortCircuitBuild<O, R> {
+    pub fn shortcircuit(self) -> YieldShortCircuitBuild<O> {
         YieldShortCircuitBuild {
             output: self.output,
-            _marker: PhantomData,
         }
     }
 }
 
 /// Builder state representing a potential short-circuit without initial yield.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct ShortCircuitBuild<R>(PhantomData<R>);
+pub struct ShortCircuitBuild;
 
-impl<R> ShortCircuitBuild<R> {
-    pub fn then<I, O, S>(self, sans: S) -> ShortCircuit<S, R>
+impl ShortCircuitBuild {
+    pub fn then<I, O, S, R>(self, sans: S) -> ShortCircuit<S, R>
     where
         S: Sans<I, O>,
     {
         ShortCircuit::Pending(sans)
     }
 
-    pub fn returning<S>(self, done: R) -> ShortCircuit<S, R> {
+    pub fn returning<S, R>(self, done: R) -> ShortCircuit<S, R> {
         ShortCircuit::Complete(done)
     }
 
-    pub fn yielding<O>(self, output: O) -> YieldShortCircuitBuild<O, R> {
-        YieldShortCircuitBuild {
-            output,
-            _marker: PhantomData,
-        }
+    pub fn yielding<O>(self, output: O) -> YieldShortCircuitBuild<O> {
+        YieldShortCircuitBuild { output }
     }
 }
 
 /// Builder state representing an initial yield that may short-circuit.
 #[derive(Debug, Clone, Copy)]
-pub struct YieldShortCircuitBuild<O, R> {
+pub struct YieldShortCircuitBuild<O> {
     output: O,
-    _marker: PhantomData<R>,
 }
 
-impl<O, R> YieldShortCircuitBuild<O, R> {
-    pub fn then<I, S>(self, sans: S) -> ShortCircuit<Yielded<O, S>, R>
+impl<O> YieldShortCircuitBuild<O> {
+    pub fn then<I, S, R>(self, sans: S) -> ShortCircuit<Yielded<O, S>, R>
     where
         S: Sans<I, O>,
     {
         ShortCircuit::Pending(Yielded(self.output, sans))
     }
 
-    pub fn returning<S>(self, done: R) -> ShortCircuit<Yielded<O, S>, R> {
+    pub fn returning<S, R>(self, done: R) -> ShortCircuit<Yielded<O, S>, R> {
         ShortCircuit::Complete(done)
     }
 }
@@ -699,7 +722,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{Repeat, init_once, init_repeat, once, repeat};
+    use crate::build::{init_once, init_repeat, once, repeat, Repeat};
 
     fn add_three(value: i32) -> i32 {
         value + 3
@@ -904,11 +927,10 @@ mod tests {
             Step::<(i32, Repeat<fn(i32) -> i32>), &str>::Complete("done").into();
         assert!(matches!(completed, ShortCircuit::Complete("done")));
 
-        let mapped = shortcircuit::<&str>()
-            .then(repeat(|x: i32| x + 1))
+        let mapped = ShortCircuit::Pending(repeat(|x: i32| x + 1))
             .map_input(|text: &str| text.parse::<i32>().unwrap())
             .map_yield(|value| value * 3)
-            .map_return(|msg: &str| format!("{msg}!!!"));
+            .map_return(|msg: i32| format!("{msg}!!!"));
         match mapped {
             ShortCircuit::Pending(mut sans) => {
                 assert_eq!(18, sans.next("5").unwrap_yielded());
@@ -928,7 +950,7 @@ mod tests {
         assert_eq!(5, cont.next(3).unwrap_yielded());
         assert_eq!(4, cont.next(4).unwrap_complete());
 
-        let sc = shortcircuit::<&str>().then(once(|x: i32| x + 1));
+        let sc: ShortCircuit<_, &str> = shortcircuit().then(once(|x: i32| x + 1));
         match sc {
             ShortCircuit::Pending(mut sans) => {
                 assert_eq!(6, sans.next(5).unwrap_yielded());
@@ -937,9 +959,8 @@ mod tests {
             ShortCircuit::Complete(_) => panic!("expected pending"),
         }
 
-        let sc_with_yield = yielding(3)
-            .shortcircuit::<&'static str>()
-            .then(once(|x: i32| x + 1));
+        let sc_with_yield: ShortCircuit<Yielded<_, _>, &'static str> =
+            yielding(3).shortcircuit().then(once(|x: i32| x + 1));
         match sc_with_yield {
             ShortCircuit::Pending(Yielded(output, mut sans)) => {
                 assert_eq!(3, output);
@@ -949,7 +970,7 @@ mod tests {
             ShortCircuit::Complete(_) => panic!("expected pending"),
         }
 
-        let sc_complete: ShortCircuit<(), &str> = shortcircuit::<&str>().returning::<()>("done");
+        let sc_complete: ShortCircuit<(), &str> = shortcircuit().returning("done");
         assert!(matches!(sc_complete, ShortCircuit::Complete("done")));
     }
 }

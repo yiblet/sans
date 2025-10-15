@@ -30,9 +30,9 @@ use std::{
 };
 
 use crate::{
-    build::{Once, Repeat, once, repeat},
-    compose::{AndThen, Chain, MapInput, MapReturn, MapYield, and_then, chain},
-    init::{ShortCircuit, Yielded},
+    build::{once, repeat, Once, Repeat},
+    compose::{and_then, chain, AndThen, Chain, MapInput, MapReturn, MapYield},
+    init::Yielded,
     iter::SansIter,
     step::Step,
 };
@@ -69,7 +69,7 @@ pub trait Sans<I, O> {
     /// ```
     fn and_then<T, F>(self, f: F) -> AndThen<Self, T, F>
     where
-        Self: Sized + Sans<I, O, Return = I>,
+        Self: Sized + Sans<I, O>,
         T: Sans<I, O>,
         F: FnOnce(Self::Return) -> Yielded<O, T>,
     {
