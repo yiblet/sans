@@ -51,7 +51,7 @@ fn init_builder_shortcircuit_pipeline() {
     use sans::init::shortcircuit;
 
     // Create a pipeline that might short-circuit
-    let maybe_pipeline = shortcircuit::<i32, i32, &'static str>().then(once(|x: i32| x * 2));
+    let maybe_pipeline = shortcircuit::<&'static str>().then(once(|x: i32| x * 2));
 
     match maybe_pipeline {
         ShortCircuit::Pending(mut sans) => {
@@ -65,7 +65,7 @@ fn init_builder_shortcircuit_pipeline() {
     }
 
     // Test immediate completion
-    let completed = shortcircuit::<i32, i32, &'static str>().returning::<()>("done early");
+    let completed = shortcircuit::<&'static str>().returning::<()>("done early");
 
     match completed {
         ShortCircuit::Complete(msg) => {
