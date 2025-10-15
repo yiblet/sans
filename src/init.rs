@@ -645,6 +645,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)]
     fn shortcircuit_conversions_and_maps() {
         let step_pending: Step<(i32, Repeat<fn(i32) -> i32>), &str> =
             Step::Yielded((4, repeat(plus_one_fn as fn(i32) -> i32)));

@@ -25,7 +25,7 @@
 //!
 //! ```
 //! use sans::prelude::*;
-//! use sans::run::handle;
+//! use sans::handle::handle;
 //!
 //! // Build a pipeline using the builder API
 //! let init_result = yielding(10)  // Yields 10 initially
@@ -73,8 +73,8 @@
 //! - [`build().then(sans)`](init::build) - Wrap `Sans` without initial output
 //!
 //! **Execution:**
-//! - [`handle(coroutine, responder)`](run::handle) - Drive computation with sync responses
-//! - [`handle_async(coroutine, responder)`](run::handle_async) - Drive computation with async responses
+//! - [`handle(coroutine, responder)`](handle::handle) - Drive computation with sync responses
+//! - [`handle_async(coroutine, responder)`](handle::handle_async) - Drive computation with async responses
 
 // Core modules (essential types)
 pub mod init;
@@ -88,7 +88,7 @@ pub mod concurrent;
 pub mod iter;
 pub mod poll;
 pub mod result;
-pub mod run;
+pub mod handle;
 pub mod sequential;
 
 // Convenience
