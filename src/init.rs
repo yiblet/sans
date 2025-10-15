@@ -28,8 +28,9 @@
 //! ```
 
 use crate::{
-    compose::{AndThen, Chain, MapInput, MapReturn, MapYield},
     Sans, Step,
+    compose::{AndThen, Chain, MapInput, MapReturn, MapYield},
+    iter::SansIter,
 };
 
 /// Result of initializing a coroutine that must yield before continuing.
@@ -137,14 +138,14 @@ impl<O, S> Yielded<O, S> {
         Yielded(output, next.chain(r))
     }
 
-    /// Chains the continuation with a function that produces a `Yielded` result.
+    /// Chains the continuation with a function that produces a `(O, T)` tuple.
     ///
     /// This allows chaining based on the first coroutine's return value.
     pub fn and_then<I, T, F>(self, f: F) -> Yielded<O, AndThen<S, T, F>>
     where
         S: Sans<I, O>,
         T: Sans<I, O>,
-        F: FnOnce(S::Return) -> Yielded<O, T>,
+        F: FnOnce(S::Return) -> (O, T),
     {
         let (output, next) = self.split();
         Yielded(output, next.and_then(f))
@@ -163,11 +164,32 @@ impl<O, S> From<Yielded<O, S>> for (O, S) {
     }
 }
 
+impl<O, S> IntoIterator for Yielded<O, S>
+where
+    S: Sans<(), O>,
+{
+    type Item = O;
+    type IntoIter = SansIter<O, S>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        SansIter::from_yielded(self)
+    }
+}
+
 /// Initialization result that may already be complete.
 #[derive(Debug, Clone, Copy)]
 pub enum ShortCircuit<S, R> {
     Pending(S),
     Complete(R),
+}
+
+impl<O, S, R> ShortCircuit<Yielded<O, S>, R> {
+    pub fn take_yielded(self) -> (Option<O>, ShortCircuit<S, R>) {
+        match self {
+            ShortCircuit::Pending(Yielded(output, s)) => (Some(output), ShortCircuit::Pending(s)),
+            ShortCircuit::Complete(ret) => (None, ShortCircuit::Complete(ret)),
+        }
+    }
 }
 
 impl<S, R> ShortCircuit<S, R> {
@@ -378,12 +400,12 @@ impl<S, R> ShortCircuit<S, R> {
         self.map_pending(|s| s.chain(r))
     }
 
-    /// Chain the pending continuation with a function that produces a `Yielded` result.
+    /// Chain the pending continuation with a function that produces a `(O, T)` tuple.
     pub fn and_then<I, O, T, F>(self, f: F) -> ShortCircuit<AndThen<S, T, F>, R>
     where
         S: Sans<I, O, Return = R>,
         T: Sans<I, O, Return = R>,
-        F: FnOnce(S::Return) -> Yielded<O, T>,
+        F: FnOnce(S::Return) -> (O, T),
     {
         self.map_pending(|s| s.and_then(f))
     }
@@ -410,6 +432,18 @@ impl<S, R> From<Step<S, R>> for ShortCircuit<S, R> {
 impl<O, S, R> From<(O, S)> for ShortCircuit<Yielded<O, S>, R> {
     fn from(value: (O, S)) -> Self {
         ShortCircuit::Pending(Yielded(value.0, value.1))
+    }
+}
+
+impl<O, S> IntoIterator for ShortCircuit<Yielded<O, S>, S::Return>
+where
+    S: Sans<(), O>,
+{
+    type Item = O;
+    type IntoIter = SansIter<O, S>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        SansIter::from_short_circuit_yielded(self)
     }
 }
 
@@ -553,11 +587,10 @@ impl<O> YieldShortCircuitBuild<O> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{once, repeat, Repeat};
+    use crate::build::{Repeat, once, repeat};
 
     fn plus_one_fn(value: i32) -> i32 {
         value + 1
@@ -605,7 +638,7 @@ mod tests {
 
         let appended = yielding(1)
             .then(once(|x: i32| x + 1))
-            .and_then(|value| yielding(value * 2).then(repeat(move |input: i32| input + value)));
+            .and_then(|value| (value * 2, repeat(move |input: i32| input + value)));
         let (initial, mut cont) = appended.into();
         assert_eq!(1, initial);
         assert_eq!(3, cont.next(2).unwrap_yielded());

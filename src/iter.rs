@@ -16,7 +16,10 @@
 //! // Iterator never completes for repeat, so no return value
 //! ```
 
-use crate::{Sans, Step};
+use crate::{
+    Sans, Step,
+    init::{ShortCircuit, Yielded},
+};
 
 /// Iterator adapter for [`Sans<(), O>`].
 ///
@@ -36,6 +39,7 @@ enum SansIterState<O, S>
 where
     S: Sans<(), O>,
 {
+    Yielded(O, S),
     Active(S),
     Complete(S::Return),
     Invalid,
@@ -58,6 +62,34 @@ where
     pub fn new(sans: S) -> Self {
         Self {
             state: SansIterState::Active(sans),
+        }
+    }
+
+    pub fn from_yielded(yielded: Yielded<O, S>) -> Self {
+        Self {
+            state: SansIterState::Yielded(yielded.0, yielded.1),
+        }
+    }
+
+    pub fn from_return(ret: S::Return) -> Self {
+        Self {
+            state: SansIterState::Complete(ret),
+        }
+    }
+
+    pub fn from_short_circuit(short_circuit: ShortCircuit<S, S::Return>) -> Self {
+        match short_circuit {
+            ShortCircuit::Pending(s) => Self::new(s),
+            ShortCircuit::Complete(ret) => Self::from_return(ret),
+        }
+    }
+
+    pub fn from_short_circuit_yielded(
+        short_circuit: ShortCircuit<Yielded<O, S>, S::Return>,
+    ) -> Self {
+        match short_circuit {
+            ShortCircuit::Pending(Yielded(output, s)) => Self::from_yielded(Yielded(output, s)),
+            ShortCircuit::Complete(ret) => Self::from_return(ret),
         }
     }
 
@@ -94,6 +126,10 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let state = self.state.take();
         match state {
+            SansIterState::Yielded(output, sans) => {
+                self.state = SansIterState::Active(sans);
+                Some(output)
+            }
             SansIterState::Active(mut sans) => match sans.next(()) {
                 Step::Yielded(output) => {
                     self.state = SansIterState::Active(sans);

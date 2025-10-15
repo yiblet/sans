@@ -5,7 +5,6 @@
 
 use crate::{
     Sans,
-    init::Yielded,
     step::Step,
 };
 
@@ -14,7 +13,7 @@ use crate::{
 ///
 /// This is similar to a monadic bind operation. The first coroutine runs until it
 /// completes, then its return value is passed to a function that produces the
-/// second coroutine as a `Yielded<O, S2>` result.
+/// second coroutine as a `(O, S2)` tuple.
 ///
 /// Created via the [`and_then`] function.
 ///
@@ -31,7 +30,7 @@ impl<I, O, L, R, F> Sans<I, O> for AndThen<L, R, F>
 where
     L: Sans<I, O>,
     R: Sans<I, O>,
-    F: FnOnce(L::Return) -> Yielded<O, R>,
+    F: FnOnce(L::Return) -> (O, R),
 {
     type Return = R::Return;
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
@@ -48,7 +47,7 @@ impl<I, O, L, R, F> Sans<I, O> for AndThenState<L, R, F>
 where
     L: Sans<I, O>,
     R: Sans<I, O>,
-    F: FnOnce(L::Return) -> Yielded<O, R>,
+    F: FnOnce(L::Return) -> (O, R),
 {
     type Return = R::Return;
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
@@ -56,7 +55,7 @@ where
             AndThenState::OnFirst(l, f) => match l.next(input) {
                 Step::Yielded(o) => Step::Yielded(o),
                 Step::Complete(a) => {
-                    let Yielded(o, next_r) = f.take().expect("AndThen::can only be used once")(a);
+                    let (o, next_r) = f.take().expect("AndThen::can only be used once")(a);
                     *self = AndThenState::OnSecond(next_r);
                     Step::Yielded(o)
                 }
@@ -71,21 +70,20 @@ where
 /// This is a monadic bind operation for coroutines. The first coroutine runs to completion,
 /// then its return value is passed to a function `f` that creates the second coroutine.
 ///
-/// **Important:** The function `f` must return a `Yielded<O, T>` result.
-/// Use the builder API to construct the result:
+/// **Important:** The function `f` must return a `(O, R)` tuple where `O` is the output to yield
+/// and `R` is the continuation coroutine:
 ///
 /// ```rust
 /// use sans::prelude::*;
 ///
-/// // Using the builder API
 /// let mut coro = once(|x: i32| x * 2)
-///     .and_then(|val| yielding(val * 10).then(repeat(move |x| x + val)));
+///     .and_then(|val| (val * 10, repeat(move |x| x + val)));
 /// ```
 ///
 /// # Arguments
 ///
 /// * `l` - The first coroutine to run
-/// * `f` - A function that takes the first coroutine's return value and produces a `Yielded<O, T>`
+/// * `f` - A function that takes the first coroutine's return value and produces a `(O, R)` tuple
 ///
 /// # Returns
 ///
@@ -101,7 +99,7 @@ where
 /// // Second coro uses that return value to configure its behavior
 /// let mut coro = and_then(
 ///     once(|x: i32| x * 2),  // yields x*2, returns next input
-///     |return_val| yielding(return_val * 10).then(repeat(move |y: i32| y + return_val)),
+///     |return_val| (return_val * 10, repeat(move |y: i32| y + return_val)),
 /// );
 ///
 /// // First coro yields 5 * 2 = 10
@@ -118,7 +116,7 @@ pub fn and_then<I, O, L, R, F>(l: L, f: F) -> AndThen<L, R, F>
 where
     L: Sans<I, O>,
     R: Sans<I, O>,
-    F: FnOnce(L::Return) -> Yielded<O, R>,
+    F: FnOnce(L::Return) -> (O, R),
 {
     AndThen {
         state: AndThenState::OnFirst(l, Some(f)),
@@ -167,7 +165,6 @@ where
 mod tests {
     use super::*;
     use crate::build::{once, repeat};
-    use crate::init::yielding;
 
     #[test]
     fn test_chain_switches_to_second_coroutine_after_first_done() {
@@ -193,7 +190,7 @@ mod tests {
         // and_then uses the RETURN value of first coroutine to create second coroutine
         let mut coro = and_then(
             once(|x: i32| x * 2), // yields x*2, then completes with next input
-            |return_val| (return_val * 10, repeat(move |y: i32| y + return_val)).into(),
+            |return_val| (return_val * 10, repeat(move |y: i32| y + return_val)),
         );
 
         // First: 5 * 2 = 10 (yielded)
@@ -224,7 +221,7 @@ mod tests {
         });
 
         let mut coro = and_then(first, |final_count| {
-            yielding(final_count * 100).then(once(move |x: i32| x + final_count))
+            (final_count * 100, once(move |x: i32| x + final_count))
         });
 
         // First yields
@@ -242,7 +239,7 @@ mod tests {
     fn test_and_then_with_init_sans() {
         // Second coroutine has initial yield
         let mut coro = and_then(once(|x: i32| x + 1), |result| {
-            yielding(result * 10).then(repeat(move |y: i32| y + result))
+            (result * 10, repeat(move |y: i32| y + result))
         });
 
         // First coroutine: 5 + 1 = 6 (yielded)
@@ -259,7 +256,7 @@ mod tests {
     fn test_and_then_completes_immediately() {
         // First coroutine completes on first input, second coroutine yields once then completes
         let mut coro = and_then(once(|x: i32| x * 2), |val| {
-            yielding(val + 100).then(once(move |x: i32| x + val))
+            (val + 100, once(move |x: i32| x + val))
         });
 
         // First: 5 * 2 = 10 (yielded)
