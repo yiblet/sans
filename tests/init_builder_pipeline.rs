@@ -26,7 +26,7 @@ fn init_builder_pipeline() {
     let mut pipeline = stage1.and_then(|result| {
         // result is the completion value from stage1
         // Create a new initialization that depends on that result
-        ShortCircuit::Pending(yielding(result * 10).then(repeat(move |x: i32| x + result)))
+        yielding(result * 10).then(repeat(move |x: i32| x + result))
     });
 
     // Drive the pipeline
@@ -149,7 +149,7 @@ fn init_builder_chain_and_then() {
     let composed = first.and_then(|return_val| {
         // return_val is the completion value from first
         // Create a new initialization that uses this value
-        ShortCircuit::Pending(yielding(return_val * 10).then(repeat(move |y: i32| y + return_val)))
+        yielding(return_val * 10).then(repeat(move |y: i32| y + return_val))
     });
 
     // Extract the composed pipeline

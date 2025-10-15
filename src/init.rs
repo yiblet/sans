@@ -148,14 +148,14 @@ impl<O, S> Yielded<O, S> {
         Yielded(output, next.chain(r))
     }
 
-    /// Chains the continuation with a function that produces a `Yielded` or `ShortCircuit` result.
+    /// Chains the continuation with a function that produces a `Yielded` result.
     ///
-    /// This allows conditional continuation based on the first coroutine's return value.
+    /// This allows chaining based on the first coroutine's return value.
     pub fn and_then<I, T, F>(self, f: F) -> Yielded<O, AndThen<S, T, F>>
     where
         S: Sans<I, O, Return = I>,
         T: Sans<I, O>,
-        F: FnOnce(S::Return) -> ShortCircuit<Yielded<O, T>, T::Return>,
+        F: FnOnce(S::Return) -> Yielded<O, T>,
     {
         let (output, next) = self.split();
         Yielded(output, next.and_then(f))
@@ -359,12 +359,12 @@ impl<S, R> ShortCircuit<S, R> {
         self.map_pending(|s| s.chain(r))
     }
 
-    /// Chain the pending continuation with a function that produces a `Yielded` or `ShortCircuit` result.
+    /// Chain the pending continuation with a function that produces a `Yielded` result.
     pub fn and_then<I, O, T, F>(self, f: F) -> ShortCircuit<AndThen<S, T, F>, R>
     where
         S: Sans<I, O, Return = I>,
         T: Sans<I, O, Return = R>,
-        F: FnOnce(S::Return) -> ShortCircuit<Yielded<O, T>, R>,
+        F: FnOnce(S::Return) -> Yielded<O, T>,
     {
         self.map_pending(|s| s.and_then(f))
     }
@@ -888,11 +888,7 @@ mod tests {
 
         let appended = yielding::<i32, i32>(1)
             .then(once(|x: i32| x + 1))
-            .and_then(|value| {
-                ShortCircuit::Pending(
-                    yielding(value * 2).then(repeat(move |input: i32| input + value)),
-                )
-            });
+            .and_then(|value| yielding(value * 2).then(repeat(move |input: i32| input + value)));
         let (initial, mut cont) = appended.into();
         assert_eq!(1, initial);
         assert_eq!(3, cont.next(2).unwrap_yielded());

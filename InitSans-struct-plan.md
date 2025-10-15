@@ -214,7 +214,7 @@ Users can migrate from old API to new API as follows:
 - `init_repeat(output, f)` → `yielding(output).then(repeat(f))`
 - `init_from_fn(output, f)` → `yielding(output).then(from_fn(f))`
 - Tuple `(output, sans)` can still be used via `From` impl to `Yielded<O, S>`
-- `and_then` closures now return `ShortCircuit::Pending(yielding(...).then(...))`
+- `and_then` closures now return `yielding(...).then(...)` directly (no need for `ShortCircuit::Pending` wrapper)
 
 A) Feature Slice
 - Remove the `InitSans` trait, finalize naming around `Yielded`/`ShortCircuit`, update documentation, and smooth public API by replacing trait bounds with builder/end-state types while deciding which legacy helper names (`init`, `init_once`, etc.) remain as aliases vs. retirement.

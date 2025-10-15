@@ -58,20 +58,20 @@ pub trait Sans<I, O> {
 
     /// Chain with a coroutine created from this coroutine's return value.
     ///
-    /// The function `f` receives the return value and must produce an [`InitSans`].
-    /// Use [`init()`](crate::build::init) to wrap a `Sans`:
+    /// The function `f` receives the return value and must produce a `Yielded<O, T>`.
+    /// Use the builder API to construct the result:
     ///
     /// ```rust
     /// use sans::prelude::*;
     ///
     /// let mut coro = once(|x: i32| x * 2)
-    ///     .and_then(|val| ShortCircuit::Pending(yielding(val).then(repeat(move |x| x + val))));
+    ///     .and_then(|val| yielding(val).then(repeat(move |x| x + val)));
     /// ```
     fn and_then<T, F>(self, f: F) -> AndThen<Self, T, F>
     where
         Self: Sized + Sans<I, O, Return = I>,
         T: Sans<I, O>,
-        F: FnOnce(Self::Return) -> ShortCircuit<Yielded<O, T>, T::Return>,
+        F: FnOnce(Self::Return) -> Yielded<O, T>,
     {
         and_then(self, f)
     }
