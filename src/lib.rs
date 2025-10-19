@@ -85,10 +85,10 @@ mod step;
 pub mod build;
 pub mod compose;
 pub mod concurrent;
+pub mod handle;
 pub mod iter;
 pub mod poll;
 pub mod result;
-pub mod handle;
 pub mod sequential;
 
 // Convenience

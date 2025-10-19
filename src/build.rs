@@ -1,9 +1,12 @@
-//! Function-based coroutine builders.
+//! Building coroutines from scratch
 //!
-//! This module provides basic building blocks for creating coroutines from functions.
+//! This module provides functions and types for creating new coroutines.
+//! The implementations below were previously spread across submodules and have
+//! been consolidated here for easier navigation.
 
 use crate::{Sans, step::Step};
 
+/// Wraps a closure so it implements [`Sans`].
 pub struct FromFn<F>(F);
 
 impl<I, O, D, F> Sans<I, O> for FromFn<F>
@@ -11,12 +14,13 @@ where
     F: FnMut(I) -> Step<O, D>,
 {
     type Return = D;
+
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
         (self.0)(input)
     }
 }
 
-/// Create a coroutine from a closure.
+/// Create a coroutine from a closure returning [`Step`].
 ///
 /// ```rust
 /// use sans::prelude::*;
@@ -41,6 +45,7 @@ where
     F: FnMut(I) -> O,
 {
     type Return = I;
+
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
         Step::Yielded(self.0(input))
     }
@@ -83,6 +88,7 @@ where
     F: FnOnce(I) -> O,
 {
     type Return = I;
+
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
         match self.0.take() {
             Some(f) => Step::Yielded(f(input)),

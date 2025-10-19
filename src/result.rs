@@ -393,5 +393,4 @@ mod tests {
         assert_eq!(flattened.next(5).unwrap_yielded(), 10);
         assert_eq!(flattened.next(10).unwrap_complete(), Ok(10));
     }
-
 }

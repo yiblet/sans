@@ -30,8 +30,8 @@ use std::{
 };
 
 use crate::{
-    build::{once, repeat, Once, Repeat},
-    compose::{and_then, chain, AndThen, Chain, MapInput, MapReturn, MapYield},
+    build::{Once, Repeat, once, repeat},
+    compose::{AndThen, Chain, MapInput, MapReturn, MapYield, and_then, chain},
     iter::SansIter,
     step::Step,
 };

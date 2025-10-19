@@ -3,10 +3,7 @@
 //! This module provides the [`Chain`] and [`AndThen`] combinators for running
 //! coroutines one after another.
 
-use crate::{
-    Sans,
-    step::Step,
-};
+use crate::{Sans, step::Step};
 
 /// A coroutine that runs one coroutine to completion, then uses its return value
 /// to create and run a second coroutine.

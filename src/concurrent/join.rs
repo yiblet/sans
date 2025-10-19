@@ -644,5 +644,4 @@ mod tests {
             other => panic!("Expected Complete, got {:?}", other),
         }
     }
-
 }
