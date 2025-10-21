@@ -6,10 +6,10 @@
 pub use crate::{Sans, Step};
 
 // Builder API for initialization
-pub use crate::init::{ShortCircuit, Yielded, build, shortcircuit, yielding};
+pub use crate::init::{build, shortcircuit, yielding, ShortCircuit, Yielded};
 
 // Most common constructors
-pub use crate::build::{from_fn, once, repeat};
+pub use crate::build::{from_fn, once, repeat, try_from_fn};
 
 // Composition
 pub use crate::compose::chain;

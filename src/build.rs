@@ -35,6 +35,49 @@ pub fn from_fn<F>(f: F) -> FromFn<F> {
     FromFn(f)
 }
 
+/// Wraps a fallible closure so it implements [`Sans`].
+pub struct TryFromFn<F>(F);
+
+impl<I, O, D, E, F> Sans<I, O> for TryFromFn<F>
+where
+    F: FnMut(I) -> Result<Step<O, D>, E>,
+{
+    type Return = Result<D, E>;
+
+    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+        match (self.0)(input) {
+            Ok(Step::Yielded(output)) => Step::Yielded(output),
+            Ok(Step::Complete(done)) => Step::Complete(Ok(done)),
+            Err(error) => Step::Complete(Err(error)),
+        }
+    }
+}
+
+/// Create a coroutine from a fallible closure returning [`Result<Step<O, D>, E>`].
+///
+/// ```rust
+/// use sans::prelude::*;
+///
+/// let mut fallible_toggle = try_from_fn(|x: bool| {
+///     if x {
+///         Ok(Step::Yielded(!x))
+///     } else if x == false {
+///         Err("Error on false input")
+///     } else {
+///         Ok(Step::Complete(x))
+///     }
+/// });
+///
+/// match fallible_toggle.next(true) {
+///     Step::Yielded(output) => println!("Yielded: {}", output),
+///     Step::Complete(Ok(result)) => println!("Completed successfully: {}", result),
+///     Step::Complete(Err(error)) => println!("Failed with error: {}", error),
+/// }
+/// ```
+pub fn try_from_fn<F>(f: F) -> TryFromFn<F> {
+    TryFromFn(f)
+}
+
 /// Applies a function to each input, yielding results indefinitely.
 ///
 /// Never completes on its own - will continue processing until externally stopped.

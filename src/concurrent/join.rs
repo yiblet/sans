@@ -3,7 +3,7 @@
 //! This module provides the [`Join`] combinator for running multiple coroutines
 //! concurrently, polling them for outputs and directing inputs to specific coroutines.
 
-use crate::poll::{Poll, PollError, PollOutput, Pollable, poll};
+use crate::poll::{PollInput, PollError, PollOutput, Pollable, poll};
 use crate::{Sans, Step};
 
 /// Create a [`Join`] from an array of [`Sans`] coroutines.
@@ -15,7 +15,7 @@ use crate::{Sans, Step};
 ///
 /// ```
 /// use sans::prelude::*;
-/// use sans::poll::{Poll, PollOutput};
+/// use sans::poll::{PollInput, PollOutput};
 /// use sans::concurrent::{join, JoinEnvelope};
 ///
 /// fn add_one(x: i32) -> i32 { x + 1 }
@@ -25,7 +25,7 @@ use crate::{Sans, Step};
 /// let mut joined = join([coro1, coro2]);
 ///
 /// // Send input to first coro
-/// match joined.next(Poll::Input(JoinEnvelope::new(0, 10))) {
+/// match joined.next(PollInput::Input(JoinEnvelope::new(0, 10))) {
 ///     Step::Yielded(PollOutput::Output(env)) => {
 ///         assert_eq!(*env.value(), 11);
 ///     }
@@ -67,12 +67,12 @@ where
 /// `Join` coordinates execution of `N` coroutines, each wrapped in a [`Pollable`]. Inputs and outputs
 /// are tagged with a [`JoinEnvelope`] containing the coroutine index.
 ///
-/// When polled (`Poll::Poll`), it uses round-robin scheduling to check each coroutine for available
-/// output. Inputs (`Poll::Input(JoinEnvelope(index, value))`) are routed to the specified coroutine.
+/// When polled (`PollInput::Poll`), it uses round-robin scheduling to check each coroutine for available
+/// output. Inputs (`PollInput::Input(JoinEnvelope(index, value))`) are routed to the specified coroutine.
 ///
 /// The join completes when all coroutines complete, returning an array of their return values.
 pub struct Join<const N: usize, S, O, R> {
-    pollables: [Pollable<S>; N],
+    pollables: [Pollable<O, R, S>; N],
     returns: [Option<R>; N],
     last_index: usize,
     complete: usize,
@@ -83,7 +83,7 @@ pub struct Join<const N: usize, S, O, R> {
 ///
 /// Like [`Join`] but uses a `Vec` to store coroutines, allowing the number to be determined at runtime.
 pub struct JoinVec<S, O, R> {
-    pollables: Vec<Pollable<S>>,
+    pollables: Vec<Pollable<O, R, S>>,
     returns: Vec<Option<R>>,
     last_index: usize,
     complete: usize,
@@ -161,7 +161,7 @@ impl<T> std::ops::Deref for JoinEnvelope<T> {
 }
 
 impl<const N: usize, I, O, S>
-    Sans<Poll<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>
+    Sans<PollInput<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>
     for Join<N, S, O, S::Return>
 where
     S: Sans<I, O>,
@@ -170,15 +170,15 @@ where
 
     fn next(
         &mut self,
-        input: Poll<JoinEnvelope<I>>,
+        input: PollInput<JoinEnvelope<I>>,
     ) -> Step<PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Return> {
         match input {
-            Poll::Poll => {
+            PollInput::Poll => {
                 // Round-robin through pollables looking for output
                 for i in 0..N {
                     let idx = (self.last_index + 1 + i) % N;
                     if let Some(pollable) = self.pollables.get_mut(idx) {
-                        match pollable.next(Poll::Poll) {
+                        match pollable.next(PollInput::Poll) {
                             Step::Yielded(PollOutput::Output(o)) => {
                                 self.last_index = idx;
                                 return Step::Yielded(PollOutput::Output(JoinEnvelope(
@@ -237,10 +237,10 @@ where
                 Step::Yielded(PollOutput::NeedsInput)
             }
 
-            Poll::Input(JoinEnvelope(id, input)) => {
+            PollInput::Input(JoinEnvelope(id, input)) => {
                 let idx = id.as_usize();
                 if let Some(pollable) = self.pollables.get_mut(idx) {
-                    match pollable.next(Poll::Input(input)) {
+                    match pollable.next(PollInput::Input(input)) {
                         Step::Yielded(PollOutput::Output(o)) => {
                             Step::Yielded(PollOutput::Output(JoinEnvelope(id, o)))
                         }
@@ -284,7 +284,7 @@ where
 }
 
 // Implement Sans for JoinVec
-impl<I, O, S> Sans<Poll<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>
+impl<I, O, S> Sans<PollInput<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>
     for JoinVec<S, O, S::Return>
 where
     S: Sans<I, O>,
@@ -293,17 +293,17 @@ where
 
     fn next(
         &mut self,
-        input: Poll<JoinEnvelope<I>>,
+        input: PollInput<JoinEnvelope<I>>,
     ) -> Step<PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Return> {
         let n = self.pollables.len();
 
         match input {
-            Poll::Poll => {
+            PollInput::Poll => {
                 // Round-robin through pollables looking for output
                 for i in 0..n {
                     let idx = (self.last_index + 1 + i) % n;
                     if let Some(pollable) = self.pollables.get_mut(idx) {
-                        match pollable.next(Poll::Poll) {
+                        match pollable.next(PollInput::Poll) {
                             Step::Yielded(PollOutput::Output(o)) => {
                                 self.last_index = idx;
                                 return Step::Yielded(PollOutput::Output(JoinEnvelope(
@@ -358,10 +358,10 @@ where
                 Step::Yielded(PollOutput::NeedsInput)
             }
 
-            Poll::Input(JoinEnvelope(id, input)) => {
+            PollInput::Input(JoinEnvelope(id, input)) => {
                 let idx = id.as_usize();
                 if let Some(pollable) = self.pollables.get_mut(idx) {
-                    match pollable.next(Poll::Input(input)) {
+                    match pollable.next(PollInput::Input(input)) {
                         Step::Yielded(PollOutput::Output(o)) => {
                             Step::Yielded(PollOutput::Output(JoinEnvelope(id, o)))
                         }
@@ -419,19 +419,19 @@ mod tests {
         let mut joined = join([s1, s2]);
 
         // Poll should indicate needs input
-        match joined.next(Poll::Poll) {
+        match joined.next(PollInput::Poll) {
             Step::Yielded(PollOutput::NeedsInput) => {}
             other => panic!("Expected NeedsInput, got {:?}", other),
         }
 
         // Send input to first sans
-        match joined.next(Poll::Input(JoinEnvelope::new(0, 10))) {
+        match joined.next(PollInput::Input(JoinEnvelope::new(0, 10))) {
             Step::Yielded(PollOutput::Output(JoinEnvelope(_, 11))) => {}
             other => panic!("Expected Output(JoinEnvelope(_, 11)), got {:?}", other),
         }
 
         // Send input to second sans
-        match joined.next(Poll::Input(JoinEnvelope::new(1, 5))) {
+        match joined.next(PollInput::Input(JoinEnvelope::new(1, 5))) {
             Step::Yielded(PollOutput::Output(JoinEnvelope(_, 6))) => {}
             other => panic!("Expected Output(JoinEnvelope(_, 6)), got {:?}", other),
         }
@@ -447,18 +447,18 @@ mod tests {
         let mut joined = join([s1, s2]);
 
         // Send inputs to both - they produce outputs directly (repeat always yields)
-        match joined.next(Poll::Input(JoinEnvelope::new(0, 10))) {
+        match joined.next(PollInput::Input(JoinEnvelope::new(0, 10))) {
             Step::Yielded(PollOutput::Output(JoinEnvelope(_, 11))) => {}
             other => panic!("Expected Output, got {:?}", other),
         }
 
-        match joined.next(Poll::Input(JoinEnvelope::new(1, 5))) {
+        match joined.next(PollInput::Input(JoinEnvelope::new(1, 5))) {
             Step::Yielded(PollOutput::Output(JoinEnvelope(_, 6))) => {}
             other => panic!("Expected Output, got {:?}", other),
         }
 
         // Send more inputs
-        match joined.next(Poll::Input(JoinEnvelope::new(0, 20))) {
+        match joined.next(PollInput::Input(JoinEnvelope::new(0, 20))) {
             Step::Yielded(PollOutput::Output(JoinEnvelope(_, 21))) => {}
             other => panic!("Expected Output, got {:?}", other),
         }
@@ -473,13 +473,13 @@ mod tests {
         let mut joined = join([s1]);
 
         // Send input - once yields first
-        match joined.next(Poll::Input(JoinEnvelope::new(0, 10))) {
+        match joined.next(PollInput::Input(JoinEnvelope::new(0, 10))) {
             Step::Yielded(PollOutput::Output(JoinEnvelope(_, 11))) => {}
             other => panic!("Expected Output, got {:?}", other),
         }
 
         // Send another input to complete
-        match joined.next(Poll::Input(JoinEnvelope::new(0, 99))) {
+        match joined.next(PollInput::Input(JoinEnvelope::new(0, 99))) {
             Step::Complete(Ok([99])) => {}
             other => panic!("Expected Complete(Ok([99])), got {:?}", other),
         }
@@ -497,25 +497,25 @@ mod tests {
 
         // Send inputs to all - they yield outputs first
         joined
-            .next(Poll::Input(JoinEnvelope::new(0, 10)))
+            .next(PollInput::Input(JoinEnvelope::new(0, 10)))
             .expect_yielded("should yield");
         joined
-            .next(Poll::Input(JoinEnvelope::new(1, 5)))
+            .next(PollInput::Input(JoinEnvelope::new(1, 5)))
             .expect_yielded("should yield");
         joined
-            .next(Poll::Input(JoinEnvelope::new(2, 20)))
+            .next(PollInput::Input(JoinEnvelope::new(2, 20)))
             .expect_yielded("should yield");
 
         // Send second inputs to complete each
         joined
-            .next(Poll::Input(JoinEnvelope::new(0, 100)))
+            .next(PollInput::Input(JoinEnvelope::new(0, 100)))
             .expect_yielded("should yield");
         joined
-            .next(Poll::Input(JoinEnvelope::new(1, 200)))
+            .next(PollInput::Input(JoinEnvelope::new(1, 200)))
             .expect_yielded("should yield");
 
         // Final completion
-        match joined.next(Poll::Input(JoinEnvelope::new(2, 300))) {
+        match joined.next(PollInput::Input(JoinEnvelope::new(2, 300))) {
             Step::Complete(Ok(results)) => {
                 assert_eq!(results, [100, 200, 300]);
             }
@@ -534,18 +534,18 @@ mod tests {
 
         // Send inputs out of order - they yield first
         joined
-            .next(Poll::Input(JoinEnvelope::new(1, 5)))
+            .next(PollInput::Input(JoinEnvelope::new(1, 5)))
             .expect_yielded("should yield");
         joined
-            .next(Poll::Input(JoinEnvelope::new(0, 10)))
+            .next(PollInput::Input(JoinEnvelope::new(0, 10)))
             .expect_yielded("should yield");
 
         // Complete them
         joined
-            .next(Poll::Input(JoinEnvelope::new(1, 100)))
+            .next(PollInput::Input(JoinEnvelope::new(1, 100)))
             .expect_yielded("should yield");
 
-        match joined.next(Poll::Input(JoinEnvelope::new(0, 200))) {
+        match joined.next(PollInput::Input(JoinEnvelope::new(0, 200))) {
             Step::Complete(Ok(results)) => {
                 assert_eq!(results, [200, 100]);
             }
@@ -565,15 +565,15 @@ mod tests {
         // Interleave operations on both sans
         for i in 0..3 {
             joined
-                .next(Poll::Input(JoinEnvelope::new(0, i)))
+                .next(PollInput::Input(JoinEnvelope::new(0, i)))
                 .expect_yielded("should yield");
             joined
-                .next(Poll::Input(JoinEnvelope::new(1, i)))
+                .next(PollInput::Input(JoinEnvelope::new(1, i)))
                 .expect_yielded("should yield");
         }
 
         // Should still be running
-        match joined.next(Poll::Poll) {
+        match joined.next(PollInput::Poll) {
             Step::Yielded(_) => {}
             other => panic!("Expected Yielded, got {:?}", other),
         }
@@ -589,7 +589,7 @@ mod tests {
 
         // Send inputs continuously
         for i in 1..=5 {
-            match joined.next(Poll::Input(JoinEnvelope::new(0, i))) {
+            match joined.next(PollInput::Input(JoinEnvelope::new(0, i))) {
                 Step::Yielded(PollOutput::Output(JoinEnvelope(_, output))) => {
                     assert_eq!(output, i + 1);
                 }
@@ -608,7 +608,7 @@ mod tests {
         let mut joined = join([s1, s2]);
 
         // Poll when all are waiting
-        match joined.next(Poll::Poll) {
+        match joined.next(PollInput::Poll) {
             Step::Yielded(PollOutput::NeedsInput) => {}
             other => panic!("Expected NeedsInput, got {:?}", other),
         }
@@ -625,19 +625,19 @@ mod tests {
 
         // First inputs yield outputs
         joined
-            .next(Poll::Input(JoinEnvelope::new(0, 10)))
+            .next(PollInput::Input(JoinEnvelope::new(0, 10)))
             .expect_yielded("should yield");
         joined
-            .next(Poll::Input(JoinEnvelope::new(1, 5)))
+            .next(PollInput::Input(JoinEnvelope::new(1, 5)))
             .expect_yielded("should yield");
 
         // Complete both
         joined
-            .next(Poll::Input(JoinEnvelope::new(0, 100)))
+            .next(PollInput::Input(JoinEnvelope::new(0, 100)))
             .expect_yielded("should yield");
 
         // Last completion
-        match joined.next(Poll::Input(JoinEnvelope::new(1, 200))) {
+        match joined.next(PollInput::Input(JoinEnvelope::new(1, 200))) {
             Step::Complete(Ok(results)) => {
                 assert_eq!(results, [100, 200]);
             }
