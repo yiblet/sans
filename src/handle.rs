@@ -433,7 +433,7 @@ impl<F> HandlerAsync<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{build::once, compose::chain};
+    use crate::{compose::chain, func::once};
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::future::{Future, ready};
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn test_handler_basic() {
-        use crate::build::once;
+        use crate::func::once;
 
         let handler = Handler::new(|x: u32| x + 1);
         let coro = once(|x: u32| x * 2);
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn test_handler_yielded() {
-        use crate::build::once;
+        use crate::func::once;
         use crate::yielded::Yielded;
 
         let handler = Handler::new(|x: u32| x);
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_handler_result_ok() {
-        use crate::build::once;
+        use crate::func::once;
 
         let handler = Handler::new(|x: u32| if x > 100 { Err("too large") } else { Ok(x + 1) });
 
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn test_handler_result_err() {
-        use crate::build::repeat;
+        use crate::func::repeat;
 
         let handler = Handler::new(|x: u32| if x > 100 { Err("too large") } else { Ok(x + 1) });
 
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn test_handler_yielded_result_ok() {
-        use crate::build::once;
+        use crate::func::once;
         use crate::yielded::Yielded;
 
         let handler = Handler::new(|x: u32| if x > 100 { Err("too large") } else { Ok(x) });
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn test_handler_yielded_result_err() {
-        use crate::build::once;
+        use crate::func::once;
         use crate::yielded::Yielded;
 
         let handler = Handler::new(|x: u32| if x > 100 { Err("too large") } else { Ok(x) });
@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn test_handler_async_basic() {
-        use crate::build::once;
+        use crate::func::once;
 
         let handler = HandlerAsync::new(|x: u32| ready(x + 1));
         let coro = once(|x: u32| x * 2);
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn test_handler_async_yielded() {
-        use crate::build::once;
+        use crate::func::once;
         use crate::yielded::Yielded;
 
         let handler = HandlerAsync::new(|x: u32| ready(x));
@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn test_handler_async_result_ok() {
-        use crate::build::once;
+        use crate::func::once;
 
         let handler =
             HandlerAsync::new(|x: u32| ready(if x > 100 { Err("too large") } else { Ok(x + 1) }));
@@ -606,7 +606,7 @@ mod tests {
 
     #[test]
     fn test_handler_async_result_err() {
-        use crate::build::repeat;
+        use crate::func::repeat;
 
         let handler =
             HandlerAsync::new(|x: u32| ready(if x > 100 { Err("too large") } else { Ok(x + 1) }));
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn test_handler_async_yielded_result_ok() {
-        use crate::build::once;
+        use crate::func::once;
         use crate::yielded::Yielded;
 
         let handler =
@@ -631,7 +631,7 @@ mod tests {
 
     #[test]
     fn test_handler_async_yielded_result_err() {
-        use crate::build::once;
+        use crate::func::once;
         use crate::yielded::Yielded;
 
         let handler =

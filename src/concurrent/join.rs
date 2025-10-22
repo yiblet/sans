@@ -406,7 +406,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{once, repeat};
+    use crate::func::{once, repeat};
 
     #[test]
     fn test_join_two_sans_basic() {

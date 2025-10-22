@@ -77,13 +77,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::once;
+    use crate::func::once;
 
     #[test]
     fn test_many_empty_array() {
         // Empty array should immediately complete with input
         #[allow(clippy::type_complexity)]
-        let mut coro: Many<0, crate::build::Once<fn(i32) -> i32>> = many([]);
+        let mut coro: Many<0, crate::func::Once<fn(i32) -> i32>> = many([]);
 
         assert_eq!(coro.next(42).unwrap_complete(), 42);
     }

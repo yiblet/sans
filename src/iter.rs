@@ -133,7 +133,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{once, repeat};
+    use crate::func::{once, repeat};
 
     #[test]
     fn test_sans_iter_once() {

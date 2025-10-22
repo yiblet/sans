@@ -166,7 +166,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{once, repeat};
+    use crate::func::{once, repeat};
 
     #[test]
     fn yielded_round_trip_and_maps() {

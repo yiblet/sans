@@ -46,7 +46,7 @@
 //!
 //! This library is organized by capability:
 //!
-//! - **[`build`]** - Creating new coroutines
+//! - **[`func`]** - Creating new coroutines
 //! - **[`yielded`]** - Initialization types for coroutines with initial output
 //! - **[`compose`]** - Chaining and transforming coroutines
 //! - **[`result`]** - Result combinators for error handling in coroutines
@@ -60,9 +60,9 @@
 //! ## Common Functions
 //!
 //! **Building Coroutines:**
-//! - [`once(f)`](build::once) - Apply function once, then complete
-//! - [`repeat(f)`](build::repeat) - Apply function repeatedly
-//! - [`from_fn(f)`](build::from_fn) - Create coroutine from closure returning `Step`
+//! - [`once(f)`](func::once) - Apply function once, then complete
+//! - [`repeat(f)`](func::repeat) - Apply function repeatedly
+//! - [`from_fn(f)`](func::from_fn) - Create coroutine from closure returning `Step`
 //! - [`chain(a, b)`](compose::chain) - Run coroutine `a` to completion, then run coroutine `b`
 //!
 //! **Initialization:**
@@ -78,9 +78,9 @@ mod step;
 pub mod yielded;
 
 // Capability modules
-pub mod build;
 pub mod compose;
 pub mod concurrent;
+pub mod func;
 pub mod handle;
 pub mod iter;
 pub mod poll;

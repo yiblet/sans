@@ -94,7 +94,7 @@ pub struct OkChain<S, R> {
 /// ```
 /// use sans::prelude::*;
 /// use sans::result::ok_chain;
-/// use sans::build::from_fn;
+/// use sans::func::from_fn;
 /// use sans::Step;
 ///
 /// let mut called = false;
@@ -171,7 +171,7 @@ pub struct Flatten<S> {
 /// ```
 /// use sans::prelude::*;
 /// use sans::result::flatten;
-/// use sans::build::from_fn;
+/// use sans::func::from_fn;
 /// use sans::Step;
 ///
 /// let mut called = false;
@@ -241,7 +241,7 @@ impl<I, O, S> TrySans<I, O> for S where S: Sans<I, O> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{once, repeat};
+    use crate::func::{once, repeat};
 
     #[test]
     fn test_short_circuit_propagates_ok_yields() {
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_ok_chain_propagates_err() {
-        use crate::build::from_fn;
+        use crate::func::from_fn;
         let mut called = false;
         let first = from_fn(move |x: i32| {
             if !called {
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn test_ok_chain_chains_on_ok() {
-        use crate::build::from_fn;
+        use crate::func::from_fn;
         let mut called = false;
         let first = from_fn(move |x: i32| -> Step<i32, Result<i32, String>> {
             if !called {
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_flatten_outer_err() {
-        use crate::build::from_fn;
+        use crate::func::from_fn;
         let mut called = false;
         let coro = from_fn(move |x: i32| {
             if !called {
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_flatten_inner_err() {
-        use crate::build::from_fn;
+        use crate::func::from_fn;
         let mut called = false;
         let coro = from_fn(move |x: i32| {
             if !called {
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_flatten_both_ok() {
-        use crate::build::from_fn;
+        use crate::func::from_fn;
         let mut called = false;
         let coro = from_fn(move |x: i32| {
             if !called {

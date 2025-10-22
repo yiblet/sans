@@ -9,7 +9,7 @@ pub use crate::{Sans, Step};
 pub use crate::yielded::Yielded;
 
 // Most common constructors
-pub use crate::build::{from_fn, once, repeat, try_from_fn};
+pub use crate::func::{from_fn, once, repeat, try_from_fn};
 
 // Composition
 pub use crate::compose::chain;

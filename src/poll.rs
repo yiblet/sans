@@ -137,7 +137,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{once, repeat};
+    use crate::func::{once, repeat};
 
     #[test]
     fn test_poll_basic_needs_input() {

@@ -161,7 +161,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{once, repeat};
+    use crate::func::{once, repeat};
 
     #[test]
     fn test_chain_switches_to_second_coroutine_after_first_done() {
@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn test_and_then_first_coro_yields_multiple() {
         // First coroutine yields twice before completing
-        use crate::build::from_fn;
+        use crate::func::from_fn;
         let mut count = 0;
         let first = from_fn(move |x: i32| {
             count += 1;

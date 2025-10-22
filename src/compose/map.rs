@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_map_input_basic() {
-        use crate::build::repeat;
+        use crate::func::repeat;
         let coro = repeat(|x: i32| x * 2);
         let mut mapped = map_input(|s: &str| s.parse::<i32>().unwrap(), coro);
 
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_map_input_with_once() {
-        use crate::build::once;
+        use crate::func::once;
         let coro = once(|x: i32| x + 100);
         let mut mapped = map_input(|s: String| s.len() as i32, coro);
 
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_map_input_preserves_return() {
-        use crate::build::once;
+        use crate::func::once;
         let coro = once(|x: i32| x * 2);
         let mut mapped = map_input(|x: i32| x + 1, coro);
 
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_map_yield_basic() {
-        use crate::build::repeat;
+        use crate::func::repeat;
         let coro = repeat(|x: i32| x * 2);
         let mut mapped = map_yield(|y: i32| y.to_string(), coro);
 
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_map_yield_with_once() {
-        use crate::build::once;
+        use crate::func::once;
         let coro = once(|x: i32| x + 10);
         let mut mapped = map_yield(|y: i32| format!("result={}", y), coro);
 
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_map_yield_preserves_return() {
-        use crate::build::once;
+        use crate::func::once;
         let coro = once(|x: i32| x * 2);
         let mut mapped = map_yield(|y: i32| y as f64, coro);
 
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn test_map_return_basic() {
-        use crate::build::once;
+        use crate::func::once;
         let coro = once(|x: i32| x + 5);
         let mut mapped = map_return(|r: i32| r * 10, coro);
 
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_map_return_with_repeat() {
-        use crate::build::repeat;
+        use crate::func::repeat;
         // repeat never completes, so this just demonstrates the type change
         let coro = repeat(|x: i32| x + 1);
         let _mapped = map_return(|r: i32| r.to_string(), coro);
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_map_return_yield_passthrough() {
-        use crate::build::once;
+        use crate::func::once;
         let coro = once(|x: i32| x * 2);
         let mut mapped = map_return(|r: i32| format!("done:{}", r), coro);
 
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_map_return_type_conversion() {
-        use crate::build::once;
+        use crate::func::once;
         let coro = once(|x: i32| x + 1);
         let mut mapped = map_return(|r: i32| (r as f64, r * 2), coro);
 
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_all_three_maps_combined() {
-        use crate::build::once;
+        use crate::func::once;
         // Input: &str -> parse to i32
         // Yield: i32 -> format as string
         // Return: i32 -> convert to f64
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn test_map_input_multiple_transformations() {
-        use crate::build::repeat;
+        use crate::func::repeat;
         let coro = repeat(|x: i32| x + 1);
         // Double map_input: String -> usize (len) -> i32
         let mut mapped = map_input(|s: String| s.len(), map_input(|n: usize| n as i32, coro));
