@@ -10,15 +10,14 @@
 //!
 //! ## Core Types
 //!
-//! - **[`Yielded<O, S>`](init::Yielded)**: Result of initialization that yields output before continuing
-//! - **[`ShortCircuit<S, R>`](init::ShortCircuit)**: Result that may complete early or continue
+//! - **[`Yielded<O, S>`](yielded::Yielded)**: Result of initialization that yields output before continuing
 //! - **[`Step<Y, D>`]**: Result of a single coroutine step - either `Yielded(Y)` or `Complete(D)`
 //!
 //! ## Key Features
 //!
 //! - **Composable**: Chain coroutines together with `.chain()` and `.and_then()`
 //! - **Transformable**: Use `.map_input()`, `.map_yield()`, `.map_return()`
-//! - **Builder API**: Fluent initialization with `yielding().then()` and `shortcircuit()`
+//! - **Initial Output**: Produce values immediately with `Yielded`
 //! - **Async Support**: Both sync and async execution with `handle()` and `handle_async()`
 //!
 //! ## Example
@@ -27,12 +26,11 @@
 //! use sans::prelude::*;
 //! use sans::handle::handle;
 //!
-//! // Build a pipeline using the builder API
-//! let init_result = yielding(10)  // Yields 10 initially
-//!     .then(once(|x: i32| x + 1))                 // Adds 1 to input, then completes
-//!     .chain(once(|x: i32| x * 2));               // Multiplies by 2, then completes
+//! // Build a pipeline with initial output
+//! let init_result = Yielded(10, once(|x: i32| x + 1)  // Yields 10 initially, adds 1 to input
+//!     .chain(once(|x: i32| x * 2)));                  // Multiplies by 2, then completes
 //!
-//! // Convert to tuple for compatibility with handle (which still uses InitSans)
+//! // Convert to tuple for compatibility with handle
 //! let (initial, pipeline) = init_result.into();
 //! assert_eq!(initial, 10);
 //!
@@ -49,7 +47,7 @@
 //! This library is organized by capability:
 //!
 //! - **[`build`]** - Creating new coroutines
-//! - **[`init`]** - Builder API for initialization with `yielding()`, `shortcircuit()`, and result types
+//! - **[`yielded`]** - Initialization types for coroutines with initial output
 //! - **[`compose`]** - Chaining and transforming coroutines
 //! - **[`result`]** - Result combinators for error handling in coroutines
 //! - **[`poll`]** - Universal polling adapter for bridging APIs
@@ -67,19 +65,17 @@
 //! - [`from_fn(f)`](build::from_fn) - Create coroutine from closure returning `Step`
 //! - [`chain(a, b)`](compose::chain) - Run coroutine `a` to completion, then run coroutine `b`
 //!
-//! **Initialization Builder API:**
-//! - [`yielding(value).then(sans)`](init::yielding) - Create initialization with output
-//! - [`shortcircuit().then(sans)`](init::shortcircuit) - Create fallible initialization
-//! - [`build().then(sans)`](init::build) - Wrap `Sans` without initial output
+//! **Initialization:**
+//! - [`Yielded(value, sans)`](yielded::Yielded) - Create initialization with output
 //!
 //! **Execution:**
 //! - [`handle(coroutine, responder)`](handle::handle) - Drive computation with sync responses
 //! - [`handle_async(coroutine, responder)`](handle::handle_async) - Drive computation with async responses
 
 // Core modules (essential types)
-pub mod init;
 mod sans;
 mod step;
+pub mod yielded;
 
 // Capability modules
 pub mod build;

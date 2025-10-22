@@ -16,10 +16,7 @@
 //! // Iterator never completes for repeat, so no return value
 //! ```
 
-use crate::{
-    Sans, Step,
-    init::{ShortCircuit, Yielded},
-};
+use crate::{Sans, Step, yielded::Yielded};
 
 /// Iterator adapter for [`Sans<(), O>`].
 ///
@@ -74,22 +71,6 @@ where
     pub fn from_return(ret: S::Return) -> Self {
         Self {
             state: SansIterState::Complete(ret),
-        }
-    }
-
-    pub fn from_short_circuit(short_circuit: ShortCircuit<S, S::Return>) -> Self {
-        match short_circuit {
-            ShortCircuit::Pending(s) => Self::new(s),
-            ShortCircuit::Complete(ret) => Self::from_return(ret),
-        }
-    }
-
-    pub fn from_short_circuit_yielded(
-        short_circuit: ShortCircuit<Yielded<O, S>, S::Return>,
-    ) -> Self {
-        match short_circuit {
-            ShortCircuit::Pending(Yielded(output, s)) => Self::from_yielded(Yielded(output, s)),
-            ShortCircuit::Complete(ret) => Self::from_return(ret),
         }
     }
 

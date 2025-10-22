@@ -5,9 +5,9 @@
 //! This module provides both synchronous and asynchronous execution functions,
 //! plus utilities for working with coroutines that need initial input.
 
-use crate::init::{ShortCircuit, Yielded};
 use crate::sans::Sans;
 use crate::step::Step;
+use crate::yielded::Yielded;
 use std::future::Future;
 
 /// Drives a coroutine to completion with synchronous responses.
@@ -83,8 +83,8 @@ where
 /// Synchronous handler for driving coroutines to completion.
 ///
 /// A [`Handler`] wraps a function that responds to coroutine outputs synchronously.
-/// It provides methods for handling different initialization types: plain coroutines,
-/// yielded initializers, and short-circuiting initializers.
+/// It provides methods for handling different initialization types: plain coroutines
+/// and yielded initializers.
 ///
 /// # Type Parameters
 ///
@@ -166,7 +166,7 @@ impl<F> Handler<F> {
     /// use sans::handle::Handler;
     ///
     /// let handler = Handler::new(|x: i32| x);
-    /// let yielded = yielding(10).then(once(|x: i32| x * 2));
+    /// let yielded = Yielded(10, once(|x: i32| x * 2));
     /// let result = handler.handle_yielded(yielded);
     /// assert_eq!(result, 20);
     /// ```
@@ -178,82 +178,6 @@ impl<F> Handler<F> {
         let (initial_output, coro) = yielded.split();
         let initial_input = (self.func)(initial_output);
         self.handle(coro, initial_input)
-    }
-
-    /// Drives a short-circuit initialization to completion.
-    ///
-    /// If the initialization already completed, returns the complete value.
-    /// Otherwise, drives the pending coroutine to completion.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use sans::prelude::*;
-    /// use sans::handle::Handler;
-    /// use sans::build::Once;
-    ///
-    /// let handler = Handler::new(|x: i32| x + 1);
-    ///
-    /// // Pending case
-    /// let pending: ShortCircuit<_, i32> = shortcircuit().then(once(|x: i32| x * 2));
-    /// let result = handler.handle_short_circuit(pending, 5);
-    /// assert_eq!(result, 11);
-    ///
-    /// // Complete case
-    /// let complete: ShortCircuit<Once<fn(i32) -> i32>, i32> = shortcircuit().returning(42);
-    /// let result = Handler::new(|x: i32| x + 1).handle_short_circuit(complete, 0);
-    /// assert_eq!(result, 42);
-    /// ```
-    pub fn handle_short_circuit<S, R, I, O>(self, sc: ShortCircuit<S, R>, input: I) -> R
-    where
-        F: FnMut(O) -> I,
-        S: Sans<I, O, Return = R>,
-    {
-        match sc {
-            ShortCircuit::Pending(coro) => self.handle(coro, input),
-            ShortCircuit::Complete(ret) => ret,
-        }
-    }
-
-    /// Drives a short-circuit yielded initialization to completion.
-    ///
-    /// Combines handling of both yielded output and potential short-circuiting.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use sans::prelude::*;
-    /// use sans::handle::Handler;
-    /// use sans::build::Once;
-    ///
-    /// let handler = Handler::new(|x: i32| x);
-    ///
-    /// // Pending with initial yield
-    /// let pending: ShortCircuit<Yielded<_, _>, i32> =
-    ///     yielding(10).shortcircuit().then(once(|x: i32| x * 2));
-    /// let result = handler.handle_short_circuit_yielded(pending);
-    /// assert_eq!(result, 20);
-    ///
-    /// // Complete case
-    /// let complete: ShortCircuit<Yielded<i32, Once<fn(i32) -> i32>>, i32> = shortcircuit().returning(42);
-    /// let result = Handler::new(|x: i32| x).handle_short_circuit_yielded(complete);
-    /// assert_eq!(result, 42);
-    /// ```
-    pub fn handle_short_circuit_yielded<S, R, I, O>(
-        mut self,
-        sc: ShortCircuit<Yielded<O, S>, R>,
-    ) -> R
-    where
-        F: FnMut(O) -> I,
-        S: Sans<I, O, Return = R>,
-    {
-        match sc {
-            ShortCircuit::Pending(Yielded(output, coro)) => {
-                let input = (self.func)(output);
-                self.handle(coro, input)
-            }
-            ShortCircuit::Complete(ret) => ret,
-        }
     }
 }
 
@@ -303,7 +227,7 @@ impl<F> Handler<F> {
     ///     if x > 100 { Err("too large") } else { Ok(x) }
     /// });
     ///
-    /// let yielded = yielding(10).then(once(|x: i32| x * 2));
+    /// let yielded = Yielded(10, once(|x: i32| x * 2));
     /// let result: Result<i32, _> = handler.handle_yielded_result(yielded);
     /// assert_eq!(result, Ok(20));
     /// ```
@@ -319,78 +243,13 @@ impl<F> Handler<F> {
         let initial_input = (self.func)(initial_output)?;
         self.handle_result(coro, initial_input)
     }
-
-    /// Drives a short-circuit initialization to completion with fallible responses.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use sans::prelude::*;
-    /// use sans::handle::Handler;
-    ///
-    /// let handler = Handler::new(|x: i32| {
-    ///     if x > 100 { Err("too large") } else { Ok(x + 1) }
-    /// });
-    ///
-    /// let pending: ShortCircuit<_, i32> = shortcircuit().then(once(|x: i32| x * 2));
-    /// let result: Result<i32, _> = handler.handle_short_circuit_result(pending, 5);
-    /// assert_eq!(result, Ok(11));
-    /// ```
-    pub fn handle_short_circuit_result<S, R, I, O, E>(
-        self,
-        sc: ShortCircuit<S, R>,
-        input: I,
-    ) -> Result<R, E>
-    where
-        F: FnMut(O) -> Result<I, E>,
-        S: Sans<I, O, Return = R>,
-    {
-        match sc {
-            ShortCircuit::Pending(coro) => self.handle_result(coro, input),
-            ShortCircuit::Complete(ret) => Ok(ret),
-        }
-    }
-
-    /// Drives a short-circuit yielded initialization to completion with fallible responses.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use sans::prelude::*;
-    /// use sans::handle::Handler;
-    ///
-    /// let handler = Handler::new(|x: i32| {
-    ///     if x > 100 { Err("too large") } else { Ok(x) }
-    /// });
-    ///
-    /// let pending: ShortCircuit<Yielded<_, _>, i32> =
-    ///     yielding(10).shortcircuit().then(once(|x: i32| x * 2));
-    /// let result: Result<i32, _> = handler.handle_short_circuit_yielded_result(pending);
-    /// assert_eq!(result, Ok(20));
-    /// ```
-    pub fn handle_short_circuit_yielded_result<S, R, I, O, E>(
-        mut self,
-        sc: ShortCircuit<Yielded<O, S>, R>,
-    ) -> Result<R, E>
-    where
-        F: FnMut(O) -> Result<I, E>,
-        S: Sans<I, O, Return = R>,
-    {
-        match sc {
-            ShortCircuit::Pending(Yielded(output, coro)) => {
-                let input = (self.func)(output)?;
-                self.handle_result(coro, input)
-            }
-            ShortCircuit::Complete(ret) => Ok(ret),
-        }
-    }
 }
 
 /// Asynchronous handler for driving coroutines to completion.
 ///
 /// A [`HandlerAsync`] wraps an async function that responds to coroutine outputs.
-/// It provides methods for handling different initialization types: plain coroutines,
-/// yielded initializers, and short-circuiting initializers.
+/// It provides methods for handling different initialization types: plain coroutines
+/// and yielded initializers.
 ///
 /// # Type Parameters
 ///
@@ -480,7 +339,7 @@ impl<F> HandlerAsync<F> {
     ///
     /// # async fn example() {
     /// let handler = HandlerAsync::new(|x: i32| ready(x));
-    /// let yielded = yielding(10).then(once(|x: i32| x * 2));
+    /// let yielded = Yielded(10, once(|x: i32| x * 2));
     /// let result = handler.handle_yielded(yielded).await;
     /// assert_eq!(result, 10);
     /// # }
@@ -494,71 +353,6 @@ impl<F> HandlerAsync<F> {
         let (initial_output, coro) = yielded.split();
         let initial_input = (self.func)(initial_output).await;
         self.handle(coro, initial_input).await
-    }
-
-    /// Drives a short-circuit initialization to completion asynchronously.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use sans::prelude::*;
-    /// use sans::handle::HandlerAsync;
-    /// use std::future::ready;
-    ///
-    /// # async fn example() {
-    /// let handler = HandlerAsync::new(|x: i32| ready(x + 1));
-    ///
-    /// let pending: ShortCircuit<_, i32> = shortcircuit().then(once(|x: i32| x * 2));
-    /// let result = handler.handle_short_circuit(pending, 5).await;
-    /// assert_eq!(result, 11);
-    /// # }
-    /// ```
-    pub async fn handle_short_circuit<S, R, I, O, Fut>(self, sc: ShortCircuit<S, R>, input: I) -> R
-    where
-        F: FnMut(O) -> Fut,
-        Fut: Future<Output = I>,
-        S: Sans<I, O, Return = R>,
-    {
-        match sc {
-            ShortCircuit::Pending(coro) => self.handle(coro, input).await,
-            ShortCircuit::Complete(ret) => ret,
-        }
-    }
-
-    /// Drives a short-circuit yielded initialization to completion asynchronously.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use sans::prelude::*;
-    /// use sans::handle::HandlerAsync;
-    /// use std::future::ready;
-    ///
-    /// # async fn example() {
-    /// let handler = HandlerAsync::new(|x: i32| ready(x));
-    ///
-    /// let pending: ShortCircuit<Yielded<_, _>, i32> =
-    ///     yielding(10).shortcircuit().then(once(|x: i32| x * 2));
-    /// let result = handler.handle_short_circuit_yielded(pending).await;
-    /// assert_eq!(result, 10);
-    /// # }
-    /// ```
-    pub async fn handle_short_circuit_yielded<S, R, I, O, Fut>(
-        mut self,
-        sc: ShortCircuit<Yielded<O, S>, R>,
-    ) -> R
-    where
-        F: FnMut(O) -> Fut,
-        Fut: Future<Output = I>,
-        S: Sans<I, O, Return = R>,
-    {
-        match sc {
-            ShortCircuit::Pending(Yielded(output, coro)) => {
-                let input = (self.func)(output).await;
-                self.handle(coro, input).await
-            }
-            ShortCircuit::Complete(ret) => ret,
-        }
     }
 }
 
@@ -616,7 +410,7 @@ impl<F> HandlerAsync<F> {
     ///     ready(if x > 100 { Err("too large") } else { Ok(x) })
     /// });
     ///
-    /// let yielded = yielding(10).then(once(|x: i32| x * 2));
+    /// let yielded = Yielded(10, once(|x: i32| x * 2));
     /// let result: Result<i32, _> = handler.handle_yielded_result(yielded).await;
     /// assert_eq!(result, Ok(10));
     /// # }
@@ -633,79 +427,6 @@ impl<F> HandlerAsync<F> {
         let (initial_output, coro) = yielded.split();
         let initial_input = (self.func)(initial_output).await?;
         self.handle_result(coro, initial_input).await
-    }
-
-    /// Drives a short-circuit initialization to completion with fallible asynchronous responses.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use sans::prelude::*;
-    /// use sans::handle::HandlerAsync;
-    /// use std::future::ready;
-    ///
-    /// # async fn example() {
-    /// let handler = HandlerAsync::new(|x: i32| {
-    ///     ready(if x > 100 { Err("too large") } else { Ok(x + 1) })
-    /// });
-    ///
-    /// let pending: ShortCircuit<_, i32> = shortcircuit().then(once(|x: i32| x * 2));
-    /// let result: Result<i32, _> = handler.handle_short_circuit_result(pending, 5).await;
-    /// assert_eq!(result, Ok(11));
-    /// # }
-    /// ```
-    pub async fn handle_short_circuit_result<S, R, I, O, E, Fut>(
-        self,
-        sc: ShortCircuit<S, R>,
-        input: I,
-    ) -> Result<R, E>
-    where
-        F: FnMut(O) -> Fut,
-        Fut: Future<Output = Result<I, E>>,
-        S: Sans<I, O, Return = R>,
-    {
-        match sc {
-            ShortCircuit::Pending(coro) => self.handle_result(coro, input).await,
-            ShortCircuit::Complete(ret) => Ok(ret),
-        }
-    }
-
-    /// Drives a short-circuit yielded initialization to completion with fallible asynchronous responses.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use sans::prelude::*;
-    /// use sans::handle::HandlerAsync;
-    /// use std::future::ready;
-    ///
-    /// # async fn example() {
-    /// let handler = HandlerAsync::new(|x: i32| {
-    ///     ready(if x > 100 { Err("too large") } else { Ok(x) })
-    /// });
-    ///
-    /// let pending: ShortCircuit<Yielded<_, _>, i32> =
-    ///     yielding(10).shortcircuit().then(once(|x: i32| x * 2));
-    /// let result: Result<i32, _> = handler.handle_short_circuit_yielded_result(pending).await;
-    /// assert_eq!(result, Ok(10));
-    /// # }
-    /// ```
-    pub async fn handle_short_circuit_yielded_result<S, R, I, O, E, Fut>(
-        mut self,
-        sc: ShortCircuit<Yielded<O, S>, R>,
-    ) -> Result<R, E>
-    where
-        F: FnMut(O) -> Fut,
-        Fut: Future<Output = Result<I, E>>,
-        S: Sans<I, O, Return = R>,
-    {
-        match sc {
-            ShortCircuit::Pending(Yielded(output, coro)) => {
-                let input = (self.func)(output).await?;
-                self.handle_result(coro, input).await
-            }
-            ShortCircuit::Complete(ret) => Ok(ret),
-        }
     }
 }
 
@@ -796,63 +517,12 @@ mod tests {
     #[test]
     fn test_handler_yielded() {
         use crate::build::once;
-        use crate::init::yielding;
+        use crate::yielded::Yielded;
 
         let handler = Handler::new(|x: u32| x);
-        let yielded = yielding(10).then(once(|x: u32| x * 2));
+        let yielded = Yielded(10, once(|x: u32| x * 2));
         let result = handler.handle_yielded(yielded);
         assert_eq!(result, 20);
-    }
-
-    #[test]
-    fn test_handler_short_circuit_pending() {
-        use crate::build::once;
-        use crate::init::shortcircuit;
-
-        let handler = Handler::new(|x: u32| x + 1);
-        let pending: crate::init::ShortCircuit<_, u32> = shortcircuit().then(once(|x: u32| x * 2));
-        let result = handler.handle_short_circuit(pending, 5);
-        assert_eq!(result, 11);
-    }
-
-    #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_handler_short_circuit_complete() {
-        use crate::build::Once;
-        use crate::init::shortcircuit;
-
-        let handler = Handler::new(|x: u32| x + 1);
-        let complete: crate::init::ShortCircuit<Once<fn(u32) -> u32>, u32> =
-            shortcircuit().returning(42);
-        let result = handler.handle_short_circuit(complete, 0);
-        assert_eq!(result, 42);
-    }
-
-    #[test]
-    fn test_handler_short_circuit_yielded_pending() {
-        use crate::build::once;
-        use crate::init::yielding;
-
-        let handler = Handler::new(|x: u32| x);
-        let pending: crate::init::ShortCircuit<_, u32> =
-            yielding(10).shortcircuit().then(once(|x: u32| x * 2));
-        let result = handler.handle_short_circuit_yielded(pending);
-        assert_eq!(result, 20);
-    }
-
-    #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_handler_short_circuit_yielded_complete() {
-        use crate::build::Once;
-        use crate::init::shortcircuit;
-
-        let handler = Handler::new(|x: u32| x);
-        let complete: crate::init::ShortCircuit<
-            crate::init::Yielded<u32, Once<fn(u32) -> u32>>,
-            u32,
-        > = shortcircuit().returning(42);
-        let result = handler.handle_short_circuit_yielded(complete);
-        assert_eq!(result, 42);
     }
 
     #[test]
@@ -880,11 +550,11 @@ mod tests {
     #[test]
     fn test_handler_yielded_result_ok() {
         use crate::build::once;
-        use crate::init::yielding;
+        use crate::yielded::Yielded;
 
         let handler = Handler::new(|x: u32| if x > 100 { Err("too large") } else { Ok(x) });
 
-        let yielded = yielding(10).then(once(|x: u32| x * 2));
+        let yielded = Yielded(10, once(|x: u32| x * 2));
         let result: Result<u32, _> = handler.handle_yielded_result(yielded);
         assert_eq!(result, Ok(20));
     }
@@ -892,81 +562,13 @@ mod tests {
     #[test]
     fn test_handler_yielded_result_err() {
         use crate::build::once;
-        use crate::init::yielding;
+        use crate::yielded::Yielded;
 
         let handler = Handler::new(|x: u32| if x > 100 { Err("too large") } else { Ok(x) });
 
-        let yielded = yielding(150).then(once(|x: u32| x * 2));
+        let yielded = Yielded(150, once(|x: u32| x * 2));
         let result: Result<u32, _> = handler.handle_yielded_result(yielded);
         assert_eq!(result, Err("too large"));
-    }
-
-    #[test]
-    fn test_handler_short_circuit_result_pending_ok() {
-        use crate::build::once;
-        use crate::init::shortcircuit;
-
-        let handler = Handler::new(|x: u32| if x > 100 { Err("too large") } else { Ok(x + 1) });
-
-        let pending: crate::init::ShortCircuit<_, u32> = shortcircuit().then(once(|x: u32| x * 2));
-        let result: Result<u32, _> = handler.handle_short_circuit_result(pending, 5);
-        assert_eq!(result, Ok(11));
-    }
-
-    #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_handler_short_circuit_result_complete() {
-        use crate::build::Once;
-        use crate::init::shortcircuit;
-
-        let handler = Handler::new(|x: u32| if x > 100 { Err("too large") } else { Ok(x + 1) });
-
-        let complete: crate::init::ShortCircuit<Once<fn(u32) -> u32>, u32> =
-            shortcircuit().returning(42);
-        let result: Result<u32, _> = handler.handle_short_circuit_result(complete, 0);
-        assert_eq!(result, Ok(42));
-    }
-
-    #[test]
-    fn test_handler_short_circuit_yielded_result_pending_ok() {
-        use crate::build::once;
-        use crate::init::yielding;
-
-        let handler = Handler::new(|x: u32| if x > 100 { Err("too large") } else { Ok(x) });
-
-        let pending: crate::init::ShortCircuit<_, u32> =
-            yielding(10).shortcircuit().then(once(|x: u32| x * 2));
-        let result: Result<u32, _> = handler.handle_short_circuit_yielded_result(pending);
-        assert_eq!(result, Ok(20));
-    }
-
-    #[test]
-    fn test_handler_short_circuit_yielded_result_pending_err() {
-        use crate::build::once;
-        use crate::init::yielding;
-
-        let handler = Handler::new(|x: u32| if x > 100 { Err("too large") } else { Ok(x) });
-
-        let pending: crate::init::ShortCircuit<_, u32> =
-            yielding(150).shortcircuit().then(once(|x: u32| x * 2));
-        let result: Result<u32, _> = handler.handle_short_circuit_yielded_result(pending);
-        assert_eq!(result, Err("too large"));
-    }
-
-    #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_handler_short_circuit_yielded_result_complete() {
-        use crate::build::Once;
-        use crate::init::shortcircuit;
-
-        let handler = Handler::new(|x: u32| if x > 100 { Err("too large") } else { Ok(x) });
-
-        let complete: crate::init::ShortCircuit<
-            crate::init::Yielded<u32, Once<fn(u32) -> u32>>,
-            u32,
-        > = shortcircuit().returning(42);
-        let result: Result<u32, _> = handler.handle_short_circuit_yielded_result(complete);
-        assert_eq!(result, Ok(42));
     }
 
     #[test]
@@ -982,63 +584,12 @@ mod tests {
     #[test]
     fn test_handler_async_yielded() {
         use crate::build::once;
-        use crate::init::yielding;
+        use crate::yielded::Yielded;
 
         let handler = HandlerAsync::new(|x: u32| ready(x));
-        let yielded = yielding(10).then(once(|x: u32| x * 2));
+        let yielded = Yielded(10, once(|x: u32| x * 2));
         let result = block_on(handler.handle_yielded(yielded));
         assert_eq!(result, 20);
-    }
-
-    #[test]
-    fn test_handler_async_short_circuit_pending() {
-        use crate::build::once;
-        use crate::init::shortcircuit;
-
-        let handler = HandlerAsync::new(|x: u32| ready(x + 1));
-        let pending: crate::init::ShortCircuit<_, u32> = shortcircuit().then(once(|x: u32| x * 2));
-        let result = block_on(handler.handle_short_circuit(pending, 5));
-        assert_eq!(result, 11);
-    }
-
-    #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_handler_async_short_circuit_complete() {
-        use crate::build::Once;
-        use crate::init::shortcircuit;
-
-        let handler = HandlerAsync::new(|x: u32| ready(x + 1));
-        let complete: crate::init::ShortCircuit<Once<fn(u32) -> u32>, u32> =
-            shortcircuit().returning(42);
-        let result = block_on(handler.handle_short_circuit(complete, 0));
-        assert_eq!(result, 42);
-    }
-
-    #[test]
-    fn test_handler_async_short_circuit_yielded_pending() {
-        use crate::build::once;
-        use crate::init::yielding;
-
-        let handler = HandlerAsync::new(|x: u32| ready(x));
-        let pending: crate::init::ShortCircuit<_, u32> =
-            yielding(10).shortcircuit().then(once(|x: u32| x * 2));
-        let result = block_on(handler.handle_short_circuit_yielded(pending));
-        assert_eq!(result, 20);
-    }
-
-    #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_handler_async_short_circuit_yielded_complete() {
-        use crate::build::Once;
-        use crate::init::shortcircuit;
-
-        let handler = HandlerAsync::new(|x: u32| ready(x));
-        let complete: crate::init::ShortCircuit<
-            crate::init::Yielded<u32, Once<fn(u32) -> u32>>,
-            u32,
-        > = shortcircuit().returning(42);
-        let result = block_on(handler.handle_short_circuit_yielded(complete));
-        assert_eq!(result, 42);
     }
 
     #[test]
@@ -1068,12 +619,12 @@ mod tests {
     #[test]
     fn test_handler_async_yielded_result_ok() {
         use crate::build::once;
-        use crate::init::yielding;
+        use crate::yielded::Yielded;
 
         let handler =
             HandlerAsync::new(|x: u32| ready(if x > 100 { Err("too large") } else { Ok(x) }));
 
-        let yielded = yielding(10).then(once(|x: u32| x * 2));
+        let yielded = Yielded(10, once(|x: u32| x * 2));
         let result: Result<u32, _> = block_on(handler.handle_yielded_result(yielded));
         assert_eq!(result, Ok(20));
     }
@@ -1081,87 +632,13 @@ mod tests {
     #[test]
     fn test_handler_async_yielded_result_err() {
         use crate::build::once;
-        use crate::init::yielding;
+        use crate::yielded::Yielded;
 
         let handler =
             HandlerAsync::new(|x: u32| ready(if x > 100 { Err("too large") } else { Ok(x) }));
 
-        let yielded = yielding(150).then(once(|x: u32| x * 2));
+        let yielded = Yielded(150, once(|x: u32| x * 2));
         let result: Result<u32, _> = block_on(handler.handle_yielded_result(yielded));
         assert_eq!(result, Err("too large"));
-    }
-
-    #[test]
-    fn test_handler_async_short_circuit_result_pending_ok() {
-        use crate::build::once;
-        use crate::init::shortcircuit;
-
-        let handler =
-            HandlerAsync::new(|x: u32| ready(if x > 100 { Err("too large") } else { Ok(x + 1) }));
-
-        let pending: crate::init::ShortCircuit<_, u32> = shortcircuit().then(once(|x: u32| x * 2));
-        let result: Result<u32, _> = block_on(handler.handle_short_circuit_result(pending, 5));
-        assert_eq!(result, Ok(11));
-    }
-
-    #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_handler_async_short_circuit_result_complete() {
-        use crate::build::Once;
-        use crate::init::shortcircuit;
-
-        let handler =
-            HandlerAsync::new(|x: u32| ready(if x > 100 { Err("too large") } else { Ok(x + 1) }));
-
-        let complete: crate::init::ShortCircuit<Once<fn(u32) -> u32>, u32> =
-            shortcircuit().returning(42);
-        let result: Result<u32, _> = block_on(handler.handle_short_circuit_result(complete, 0));
-        assert_eq!(result, Ok(42));
-    }
-
-    #[test]
-    fn test_handler_async_short_circuit_yielded_result_pending_ok() {
-        use crate::build::once;
-        use crate::init::yielding;
-
-        let handler =
-            HandlerAsync::new(|x: u32| ready(if x > 100 { Err("too large") } else { Ok(x) }));
-
-        let pending: crate::init::ShortCircuit<_, u32> =
-            yielding(10).shortcircuit().then(once(|x: u32| x * 2));
-        let result: Result<u32, _> = block_on(handler.handle_short_circuit_yielded_result(pending));
-        assert_eq!(result, Ok(20));
-    }
-
-    #[test]
-    fn test_handler_async_short_circuit_yielded_result_pending_err() {
-        use crate::build::once;
-        use crate::init::yielding;
-
-        let handler =
-            HandlerAsync::new(|x: u32| ready(if x > 100 { Err("too large") } else { Ok(x) }));
-
-        let pending: crate::init::ShortCircuit<_, u32> =
-            yielding(150).shortcircuit().then(once(|x: u32| x * 2));
-        let result: Result<u32, _> = block_on(handler.handle_short_circuit_yielded_result(pending));
-        assert_eq!(result, Err("too large"));
-    }
-
-    #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_handler_async_short_circuit_yielded_result_complete() {
-        use crate::build::Once;
-        use crate::init::shortcircuit;
-
-        let handler =
-            HandlerAsync::new(|x: u32| ready(if x > 100 { Err("too large") } else { Ok(x) }));
-
-        let complete: crate::init::ShortCircuit<
-            crate::init::Yielded<u32, Once<fn(u32) -> u32>>,
-            u32,
-        > = shortcircuit().returning(42);
-        let result: Result<u32, _> =
-            block_on(handler.handle_short_circuit_yielded_result(complete));
-        assert_eq!(result, Ok(42));
     }
 }

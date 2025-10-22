@@ -3,7 +3,7 @@
 //! This module provides the [`Join`] combinator for running multiple coroutines
 //! concurrently, polling them for outputs and directing inputs to specific coroutines.
 
-use crate::poll::{PollInput, PollError, PollOutput, Pollable, poll};
+use crate::poll::{PollError, PollInput, PollOutput, Pollable, poll};
 use crate::{Sans, Step};
 
 /// Create a [`Join`] from an array of [`Sans`] coroutines.
