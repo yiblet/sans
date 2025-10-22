@@ -24,14 +24,6 @@ pub enum PollInput<I> {
     Input(I),
 }
 
-/// A poll result that can be in different states.
-pub enum Poll<O, R, S> {
-    Yielded(O, S),
-    Return(R),
-    Sans(S),
-    Completed,
-}
-
 /// Output from a [`Pollable`] coroutine.
 #[derive(Debug)]
 pub enum PollOutput<I, O> {
@@ -101,14 +93,15 @@ where
 {
     type Return = Result<R, PollError>;
 
-    fn next(&mut self, input: PollInput<I>) -> Step<PollOutput<I, O>, <Self as Sans<PollInput<I>, PollOutput<I, O>>>::Return> {
+    fn next(
+        &mut self,
+        input: PollInput<I>,
+    ) -> Step<PollOutput<I, O>, <Self as Sans<PollInput<I>, PollOutput<I, O>>>::Return> {
         match self {
             Pollable::Sans(s) => match input {
                 PollInput::Poll => Step::Yielded(PollOutput::NeedsInput),
                 PollInput::Input(i) => match s.next(i) {
-                    Step::Yielded(o) => {
-                        Step::Yielded(PollOutput::Output(o))
-                    }
+                    Step::Yielded(o) => Step::Yielded(PollOutput::Output(o)),
                     Step::Complete(r) => {
                         *self = Pollable::Completed;
                         Step::Complete(Ok(r))
@@ -140,53 +133,6 @@ where
         }
     }
 }
-
-impl<I, O, R, S> Sans<PollInput<I>, PollOutput<I, O>> for Poll<O, R, S>
-where
-    S: Sans<I, O, Return = R>,
-{
-    type Return = Result<R, PollError>;
-
-    fn next(&mut self, input: PollInput<I>) -> Step<PollOutput<I, O>, <Self as Sans<PollInput<I>, PollOutput<I, O>>>::Return> {
-        match self {
-            Poll::Sans(s) => match input {
-                PollInput::Poll => Step::Yielded(PollOutput::NeedsInput),
-                PollInput::Input(i) => match s.next(i) {
-                    Step::Yielded(o) => {
-                        Step::Yielded(PollOutput::Output(o))
-                    }
-                    Step::Complete(r) => {
-                        *self = Poll::Completed;
-                        Step::Complete(Ok(r))
-                    }
-                },
-            },
-            Poll::Yielded(_, _) => match input {
-                PollInput::Poll => {
-                    // Move output out and transition to Sans state
-                    let output = std::mem::replace(self, Poll::Completed);
-                    if let Poll::Yielded(o, s) = output {
-                        *self = Poll::Sans(s);
-                        Step::Yielded(PollOutput::Output(o))
-                    } else {
-                        unreachable!()
-                    }
-                }
-                PollInput::Input(i) => Step::Yielded(PollOutput::NeedsPoll(i)),
-            },
-            Poll::Return(_) => {
-                let output = std::mem::replace(self, Poll::Completed);
-                if let Poll::Return(r) = output {
-                    Step::Complete(Ok(r))
-                } else {
-                    unreachable!()
-                }
-            }
-            Poll::Completed => Step::Complete(Err(PollError::AlreadyComplete)),
-        }
-    }
-}
-
 
 #[cfg(test)]
 mod tests {
@@ -265,7 +211,9 @@ mod tests {
         let mut pollable = poll(coro);
 
         // Send input, get output
-        pollable.next(PollInput::Input(5)).expect_yielded("should yield");
+        pollable
+            .next(PollInput::Input(5))
+            .expect_yielded("should yield");
 
         // Send another input to complete
         let _ = pollable
