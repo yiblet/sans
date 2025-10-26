@@ -18,42 +18,42 @@
 
 use crate::{Sans, Step, yielded::Yielded};
 
-/// Iterator adapter for [`Sans<(), O>`].
+/// Iterator adapter for [`Sans<()>`].
 ///
 /// Repeatedly calls `next(())` on the wrapped coroutine and yields values
 /// until the coroutine completes.
 ///
 /// Both `SansIter` and `&mut SansIter` implement `Iterator`, allowing you to
 /// iterate without consuming the wrapper, so you can later access the return value.
-pub struct SansIter<O, S>
+pub struct SansIter<S>
 where
-    S: Sans<(), O>,
+    S: Sans<()>,
 {
-    state: SansIterState<O, S>,
+    state: SansIterState<S>,
 }
 
-enum SansIterState<O, S>
+enum SansIterState<S>
 where
-    S: Sans<(), O>,
+    S: Sans<()>,
 {
-    Yielded(O, S),
+    Yielded(S::Output, S),
     Active(S),
     Complete(S::Return),
     Invalid,
 }
 
-impl<O, S> SansIterState<O, S>
+impl<S> SansIterState<S>
 where
-    S: Sans<(), O>,
+    S: Sans<()>,
 {
     fn take(&mut self) -> Self {
         std::mem::replace(self, SansIterState::Invalid)
     }
 }
 
-impl<O, S> SansIter<O, S>
+impl<S> SansIter<S>
 where
-    S: Sans<(), O>,
+    S: Sans<()>,
 {
     /// Create a new iterator from a Sans coroutine.
     pub fn new(sans: S) -> Self {
@@ -62,7 +62,7 @@ where
         }
     }
 
-    pub fn from_yielded(yielded: Yielded<O, S>) -> Self {
+    pub fn from_yielded(yielded: Yielded<S::Output, S>) -> Self {
         Self {
             state: SansIterState::Yielded(yielded.0, yielded.1),
         }
@@ -98,11 +98,11 @@ where
     }
 }
 
-impl<O, S> Iterator for SansIter<O, S>
+impl<S> Iterator for SansIter<S>
 where
-    S: Sans<(), O>,
+    S: Sans<()>,
 {
-    type Item = O;
+    type Item = S::Output;
 
     fn next(&mut self) -> Option<Self::Item> {
         let state = self.state.take();

@@ -6,9 +6,9 @@
 //!
 //! # The Sans Trait
 //!
-//! [`Sans<I, O>`] represents a computation that:
+//! [`Sans<I>`] represents a computation that:
 //! - Takes input of type `I`
-//! - Yields intermediate values of type `O`
+//! - Yields intermediate values of type `Output`
 //! - Eventually completes with a final value of type `Return`
 //!
 //! # Examples
@@ -48,16 +48,19 @@ use crate::{
 /// assert_eq!(coro.next(5).unwrap_yielded(), 10);
 /// assert_eq!(coro.next(3).unwrap_complete(), 3); // return
 /// ```
-pub trait Sans<I, O> {
+pub trait Sans<I> {
+    /// Type of yielded intermediate values
+    type Output;
+
     /// Type of final result when computation completes
     type Return;
 
     /// Process input, returning `Yield` to continue or `Return` to complete.
-    fn next(&mut self, input: I) -> Step<O, Self::Return>;
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return>;
 
     /// Chain with a coroutine created from this coroutine's return value.
     ///
-    /// The function `f` receives the return value and must produce a `(O, T)` tuple:
+    /// The function `f` receives the return value and must produce a `(Self::Output, T)` tuple:
     ///
     /// ```rust
     /// use sans::prelude::*;
@@ -67,14 +70,14 @@ pub trait Sans<I, O> {
     /// ```
     fn and_then<T, F>(self, f: F) -> AndThen<Self, T, F>
     where
-        Self: Sized + Sans<I, O>,
-        T: Sans<I, O>,
-        F: FnOnce(Self::Return) -> (O, T),
+        Self: Sized,
+        T: Sans<I, Output = Self::Output>,
+        F: FnOnce(Self::Return) -> (Self::Output, T),
     {
         and_then(self, f)
     }
 
-    fn boxed(self) -> Box<dyn Sans<I, O, Return = Self::Return>>
+    fn boxed(self) -> Box<dyn Sans<I, Output = Self::Output, Return = Self::Return>>
     where
         Self: Sized + 'static,
     {
@@ -84,8 +87,9 @@ pub trait Sans<I, O> {
     /// Chain with another coroutine.
     fn chain<R>(self, r: R) -> Chain<Self, R>
     where
-        Self: Sized + Sans<I, O, Return = I>,
-        R: Sans<I, O>,
+        Self: Sized,
+        Self::Return: Into<I>,
+        R: Sans<I, Output = Self::Output>,
     {
         chain(self, r)
     }
@@ -93,8 +97,9 @@ pub trait Sans<I, O> {
     /// Chain with a function that executes once.
     fn chain_once<F>(self, f: F) -> Chain<Self, Once<F>>
     where
-        Self: Sized + Sans<I, O, Return = I>,
-        F: FnOnce(Self::Return) -> O,
+        Self: Sized,
+        Self::Return: Into<I>,
+        F: FnOnce(I) -> Self::Output,
     {
         chain(self, once(f))
     }
@@ -102,8 +107,9 @@ pub trait Sans<I, O> {
     /// Chain with a function that repeats indefinitely.
     fn chain_repeat<F>(self, f: F) -> Chain<Self, Repeat<F>>
     where
-        Self: Sized + Sans<I, O, Return = I>,
-        F: FnMut(Self::Return) -> O,
+        Self: Sized,
+        Self::Return: Into<I>,
+        F: FnMut(I) -> Self::Output,
     {
         chain(self, repeat(f))
     }
@@ -118,10 +124,10 @@ pub trait Sans<I, O> {
     }
 
     /// Transform yielded values before returning them.
-    fn map_yield<O2, F>(self, f: F) -> MapYield<Self, F, I, O>
+    fn map_yield<O2, F>(self, f: F) -> MapYield<Self, F>
     where
         Self: Sized,
-        F: FnMut(O) -> O2,
+        F: FnMut(Self::Output) -> O2,
     {
         crate::compose::map_yield(f, self)
     }
@@ -136,9 +142,9 @@ pub trait Sans<I, O> {
     }
 
     /// Convert to an iterator.
-    fn into_iter(self) -> SansIter<O, Self>
+    fn into_iter(self) -> SansIter<Self>
     where
-        Self: Sized + Sans<(), O>,
+        Self: Sized + Sans<()>,
     {
         SansIter::new(self)
     }
@@ -155,12 +161,13 @@ impl fmt::Display for PoisonError {
 
 impl std::error::Error for PoisonError {}
 
-impl<I, O, C> Sans<I, O> for Arc<Mutex<C>>
+impl<I, C> Sans<I> for Arc<Mutex<C>>
 where
-    C: Sans<I, O>,
+    C: Sans<I>,
 {
+    type Output = C::Output;
     type Return = Result<C::Return, PoisonError>;
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         match self.lock().map_err(|_| PoisonError) {
             Ok(mut f) => f.next(input).map_complete(Ok),
             Err(e) => Step::Complete(Err(e)),
@@ -168,23 +175,25 @@ where
     }
 }
 
-impl<I, O, C> Sans<I, O> for Rc<RefCell<C>>
+impl<I, C> Sans<I> for Rc<RefCell<C>>
 where
-    C: Sans<I, O>,
+    C: Sans<I>,
 {
+    type Output = C::Output;
     type Return = C::Return;
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         let mut v = self.as_ref().borrow_mut();
         v.next(input)
     }
 }
 
-impl<I, O, C> Sans<I, O> for Option<C>
+impl<I, C> Sans<I> for Option<C>
 where
-    C: Sans<I, O>,
+    C: Sans<I>,
 {
+    type Output = C::Output;
     type Return = Option<C::Return>;
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         match self {
             Some(c) => c.next(input).map_complete(Some),
             None => Step::Complete(None),
@@ -192,13 +201,14 @@ where
     }
 }
 
-impl<I, O, L, R> Sans<I, O> for either::Either<L, R>
+impl<I, L, R> Sans<I> for either::Either<L, R>
 where
-    L: Sans<I, O>,
-    R: Sans<I, O, Return = L::Return>,
+    L: Sans<I>,
+    R: Sans<I, Output = L::Output, Return = L::Return>,
 {
+    type Output = L::Output;
     type Return = L::Return;
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         match self {
             either::Either::Left(l) => l.next(input),
             either::Either::Right(r) => r.next(input),
@@ -206,18 +216,20 @@ where
     }
 }
 
-impl<I, O, D> Sans<I, O> for Box<dyn Sans<I, O, Return = D>> {
+impl<I, O, D> Sans<I> for Box<dyn Sans<I, Output = O, Return = D>> {
+    type Output = O;
     type Return = D;
 
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         (**self).next(input)
     }
 }
 
-impl<I, O, D> Sans<I, O> for &'_ mut dyn Sans<I, O, Return = D> {
+impl<I, O, D> Sans<I> for &'_ mut dyn Sans<I, Output = O, Return = D> {
+    type Output = O;
     type Return = D;
 
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         (*self).next(input)
     }
 }

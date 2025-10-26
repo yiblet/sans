@@ -32,25 +32,24 @@ use crate::{Sans, Step};
 ///     _ => panic!("Expected output from coro 0"),
 /// }
 /// ```
-pub fn join<const N: usize, I, O, S>(rest: [S; N]) -> Join<N, S, O, S::Return>
+pub fn join<const N: usize, I, S>(rest: [S; N]) -> Join<N, I, S>
 where
-    S: Sans<I, O>,
+    S: Sans<I>,
 {
     Join {
         pollables: rest.map(|s| poll(s)),
         returns: std::array::from_fn(|_| None),
         last_index: 0,
         complete: 0,
-        _phantom: std::marker::PhantomData,
     }
 }
 
 /// Create a [`JoinVec`] from a vector of [`Sans`] coroutines.
 ///
 /// Like [`join`] but accepts a dynamic number of coroutines at runtime.
-pub fn join_vec<I, O, S>(sans: Vec<S>) -> JoinVec<S, O, S::Return>
+pub fn join_vec<I, S>(sans: Vec<S>) -> JoinVec<I, S>
 where
-    S: Sans<I, O>,
+    S: Sans<I>,
 {
     let len = sans.len();
     JoinVec {
@@ -58,7 +57,6 @@ where
         returns: (0..len).map(|_| None).collect(),
         last_index: 0,
         complete: 0,
-        _phantom: std::marker::PhantomData,
     }
 }
 
@@ -71,23 +69,27 @@ where
 /// output. Inputs (`PollInput::Input(JoinEnvelope(index, value))`) are routed to the specified coroutine.
 ///
 /// The join completes when all coroutines complete, returning an array of their return values.
-pub struct Join<const N: usize, S, O, R> {
-    pollables: [Pollable<O, R, S>; N],
-    returns: [Option<R>; N],
+pub struct Join<const N: usize, I, S>
+where
+    S: Sans<I>,
+{
+    pollables: [Pollable<I, S>; N],
+    returns: [Option<S::Return>; N],
     last_index: usize,
     complete: usize,
-    _phantom: std::marker::PhantomData<O>,
 }
 
 /// Vec-based version of [`Join`] for dynamic number of coroutines.
 ///
 /// Like [`Join`] but uses a `Vec` to store coroutines, allowing the number to be determined at runtime.
-pub struct JoinVec<S, O, R> {
-    pollables: Vec<Pollable<O, R, S>>,
-    returns: Vec<Option<R>>,
+pub struct JoinVec<I, S>
+where
+    S: Sans<I>,
+{
+    pollables: Vec<Pollable<I, S>>,
+    returns: Vec<Option<S::Return>>,
     last_index: usize,
     complete: usize,
-    _phantom: std::marker::PhantomData<O>,
 }
 
 /// Errors that can occur during join execution.
@@ -160,18 +162,19 @@ impl<T> std::ops::Deref for JoinEnvelope<T> {
     }
 }
 
-impl<const N: usize, I, O, S>
-    Sans<PollInput<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>
-    for Join<N, S, O, S::Return>
+impl<const N: usize, I, S>
+    Sans<PollInput<JoinEnvelope<I>>>
+    for Join<N, I, S>
 where
-    S: Sans<I, O>,
+    S: Sans<I>,
 {
+    type Output = PollOutput<JoinEnvelope<I>, JoinEnvelope<S::Output>>;
     type Return = Result<[S::Return; N], JoinError>;
 
     fn next(
         &mut self,
         input: PollInput<JoinEnvelope<I>>,
-    ) -> Step<PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Return> {
+    ) -> Step<Self::Output, Self::Return> {
         match input {
             PollInput::Poll => {
                 // Round-robin through pollables looking for output
@@ -284,17 +287,18 @@ where
 }
 
 // Implement Sans for JoinVec
-impl<I, O, S> Sans<PollInput<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>
-    for JoinVec<S, O, S::Return>
+impl<I, S> Sans<PollInput<JoinEnvelope<I>>>
+    for JoinVec<I, S>
 where
-    S: Sans<I, O>,
+    S: Sans<I>,
 {
+    type Output = PollOutput<JoinEnvelope<I>, JoinEnvelope<S::Output>>;
     type Return = Result<Vec<S::Return>, JoinError>;
 
     fn next(
         &mut self,
         input: PollInput<JoinEnvelope<I>>,
-    ) -> Step<PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Return> {
+    ) -> Step<Self::Output, Self::Return> {
         let n = self.pollables.len();
 
         match input {

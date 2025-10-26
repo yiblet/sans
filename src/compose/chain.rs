@@ -23,14 +23,15 @@ pub struct AndThen<S1, S2, F> {
     state: AndThenState<S1, S2, F>,
 }
 
-impl<I, O, L, R, F> Sans<I, O> for AndThen<L, R, F>
+impl<I, L, R, F> Sans<I> for AndThen<L, R, F>
 where
-    L: Sans<I, O>,
-    R: Sans<I, O>,
-    F: FnOnce(L::Return) -> (O, R),
+    L: Sans<I>,
+    R: Sans<I, Output = L::Output>,
+    F: FnOnce(L::Return) -> (L::Output, R),
 {
+    type Output = L::Output;
     type Return = R::Return;
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         self.state.next(input)
     }
 }
@@ -40,14 +41,15 @@ enum AndThenState<S1, S2, F> {
     OnSecond(S2),
 }
 
-impl<I, O, L, R, F> Sans<I, O> for AndThenState<L, R, F>
+impl<I, L, R, F> Sans<I> for AndThenState<L, R, F>
 where
-    L: Sans<I, O>,
-    R: Sans<I, O>,
-    F: FnOnce(L::Return) -> (O, R),
+    L: Sans<I>,
+    R: Sans<I, Output = L::Output>,
+    F: FnOnce(L::Return) -> (L::Output, R),
 {
+    type Output = L::Output;
     type Return = R::Return;
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         match self {
             AndThenState::OnFirst(l, f) => match l.next(input) {
                 Step::Yielded(o) => Step::Yielded(o),
@@ -109,11 +111,11 @@ where
 /// // Second coro continues: 3 + 7 = 10
 /// assert_eq!(coro.next(3).unwrap_yielded(), 10);
 /// ```
-pub fn and_then<I, O, L, R, F>(l: L, f: F) -> AndThen<L, R, F>
+pub fn and_then<I, L, R, F>(l: L, f: F) -> AndThen<L, R, F>
 where
-    L: Sans<I, O>,
-    R: Sans<I, O>,
-    F: FnOnce(L::Return) -> (O, R),
+    L: Sans<I>,
+    R: Sans<I, Output = L::Output>,
+    F: FnOnce(L::Return) -> (L::Output, R),
 {
     AndThen {
         state: AndThenState::OnFirst(l, Some(f)),
@@ -124,10 +126,11 @@ where
 ///
 /// The first coroutine's `Done` value becomes the input to the second coroutine.
 /// Both coroutines must yield the same type.
-pub fn chain<I, O, L, R>(l: L, r: R) -> Chain<L, R>
+pub fn chain<I, L, R>(l: L, r: R) -> Chain<L, R>
 where
-    L: Sans<I, O, Return = I>,
-    R: Sans<I, O>,
+    L: Sans<I>,
+    L::Return: Into<I>,
+    R: Sans<I, Output = L::Output>,
 {
     Chain(Some(l), r)
 }
@@ -138,19 +141,21 @@ where
 /// once it completes to free resources.
 pub struct Chain<S1, S2>(Option<S1>, S2);
 
-impl<I, O, L, R> Sans<I, O> for Chain<L, R>
+impl<I, L, R> Sans<I> for Chain<L, R>
 where
-    L: Sans<I, O, Return = I>,
-    R: Sans<I, O>,
+    L: Sans<I>,
+    L::Return: Into<I>,
+    R: Sans<I, Output = L::Output>,
 {
+    type Output = L::Output;
     type Return = R::Return;
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         match self.0 {
             Some(ref mut l) => match l.next(input) {
                 Step::Yielded(o) => Step::Yielded(o),
                 Step::Complete(a) => {
                     self.0 = None; // we drop the old coro when it's done
-                    self.1.next(a)
+                    self.1.next(a.into())
                 }
             },
             None => self.1.next(input),

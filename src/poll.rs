@@ -7,9 +7,12 @@ use crate::{Sans, Step};
 ///
 /// Created via [`poll`]. Wraps a [`Sans`] coroutine to enable explicit
 /// control over when inputs are provided and outputs are retrieved.
-pub enum Pollable<O, R, S> {
-    Yielded(O, S),
-    Return(R),
+pub enum Pollable<I, S>
+where
+    S: Sans<I>,
+{
+    Yielded(S::Output, S),
+    Return(S::Return),
     Sans(S),
     Completed,
 }
@@ -80,23 +83,24 @@ impl std::error::Error for PollError {}
 ///     _ => panic!("Expected Output(6)"),
 /// }
 /// ```
-pub fn poll<I, O, S>(coro: S) -> Pollable<O, S::Return, S>
+pub fn poll<I, S>(coro: S) -> Pollable<I, S>
 where
-    S: Sans<I, O>,
+    S: Sans<I>,
 {
     Pollable::Sans(coro)
 }
 
-impl<I, O, R, S> Sans<PollInput<I>, PollOutput<I, O>> for Pollable<O, R, S>
+impl<I, S> Sans<PollInput<I>> for Pollable<I, S>
 where
-    S: Sans<I, O, Return = R>,
+    S: Sans<I>,
 {
-    type Return = Result<R, PollError>;
+    type Output = PollOutput<I, S::Output>;
+    type Return = Result<S::Return, PollError>;
 
     fn next(
         &mut self,
         input: PollInput<I>,
-    ) -> Step<PollOutput<I, O>, <Self as Sans<PollInput<I>, PollOutput<I, O>>>::Return> {
+    ) -> Step<Self::Output, <Self as Sans<PollInput<I>>>::Return> {
         match self {
             Pollable::Sans(s) => match input {
                 PollInput::Poll => Step::Yielded(PollOutput::NeedsInput),

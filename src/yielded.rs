@@ -81,7 +81,7 @@ impl<O, S> Yielded<O, S> {
     /// This allows you to preprocess or convert input values before the coroutine processes them.
     pub fn map_input<I1, I2, F>(self, f: F) -> Yielded<O, MapInput<S, F>>
     where
-        S: Sans<I2, O>,
+        S: Sans<I2, Output = O>,
         F: FnMut(I1) -> I2,
     {
         let (output, next) = self.split();
@@ -91,9 +91,9 @@ impl<O, S> Yielded<O, S> {
     /// Transforms yielded values produced by the continuation.
     ///
     /// This applies the transformation to both the initial output and all future yields from the continuation.
-    pub fn map_yield<I, O2, F>(self, mut f: F) -> Yielded<O2, MapYield<S, F, I, O>>
+    pub fn map_yield<I, O2, F>(self, mut f: F) -> Yielded<O2, MapYield<S, F>>
     where
-        S: Sans<I, O>,
+        S: Sans<I, Output = O>,
         F: FnMut(O) -> O2,
     {
         let (output, next) = self.split();
@@ -106,7 +106,7 @@ impl<O, S> Yielded<O, S> {
     /// This doesn't affect yielded values, only the final return value.
     pub fn map_return<I, D2, F>(self, f: F) -> Yielded<O, MapReturn<S, F>>
     where
-        S: Sans<I, O>,
+        S: Sans<I, Output = O>,
         F: FnMut(S::Return) -> D2,
     {
         let (output, next) = self.split();
@@ -118,8 +118,8 @@ impl<O, S> Yielded<O, S> {
     /// When the first coroutine completes, its return value is passed as input to the second coroutine.
     pub fn chain<I, R>(self, r: R) -> Yielded<O, Chain<S, R>>
     where
-        S: Sans<I, O, Return = I>,
-        R: Sans<I, O>,
+        S: Sans<I, Output = O, Return = I>,
+        R: Sans<I, Output = O>,
     {
         let (output, next) = self.split();
         Yielded(output, next.chain(r))
@@ -130,8 +130,8 @@ impl<O, S> Yielded<O, S> {
     /// This allows chaining based on the first coroutine's return value.
     pub fn and_then<I, T, F>(self, f: F) -> Yielded<O, AndThen<S, T, F>>
     where
-        S: Sans<I, O>,
-        T: Sans<I, O>,
+        S: Sans<I, Output = O>,
+        T: Sans<I, Output = O>,
         F: FnOnce(S::Return) -> (O, T),
     {
         let (output, next) = self.split();
@@ -153,10 +153,10 @@ impl<O, S> From<Yielded<O, S>> for (O, S) {
 
 impl<O, S> IntoIterator for Yielded<O, S>
 where
-    S: Sans<(), O>,
+    S: Sans<(), Output = O>,
 {
     type Item = O;
-    type IntoIter = SansIter<O, S>;
+    type IntoIter = SansIter<S>;
 
     fn into_iter(self) -> Self::IntoIter {
         SansIter::from_yielded(self)

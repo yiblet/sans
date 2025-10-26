@@ -35,10 +35,10 @@ use std::future::Future;
 /// let result = handle(coro, 5, |output| output + 1);
 /// assert_eq!(result, 11);
 /// ```
-pub fn handle<C, I, O, F>(coro: C, input: I, responder: F) -> C::Return
+pub fn handle<C, I, F>(coro: C, input: I, responder: F) -> C::Return
 where
-    C: Sans<I, O>,
-    F: FnMut(O) -> I,
+    C: Sans<I>,
+    F: FnMut(C::Output) -> I,
 {
     Handler::new(responder).handle(coro, input)
 }
@@ -71,10 +71,10 @@ where
 /// assert_eq!(result, 11);
 /// # }
 /// ```
-pub async fn handle_async<C, I, O, F, Fut>(coro: C, input: I, responder: F) -> C::Return
+pub async fn handle_async<C, I, F, Fut>(coro: C, input: I, responder: F) -> C::Return
 where
-    C: Sans<I, O>,
-    F: FnMut(O) -> Fut,
+    C: Sans<I>,
+    F: FnMut(C::Output) -> Fut,
     Fut: Future<Output = I>,
 {
     HandlerAsync::new(responder).handle(coro, input).await
@@ -140,10 +140,10 @@ impl<F> Handler<F> {
     /// let result = handler.handle(coro, 5);
     /// assert_eq!(result, 11);
     /// ```
-    pub fn handle<C, I, O>(mut self, mut coro: C, mut input: I) -> C::Return
+    pub fn handle<C, I>(mut self, mut coro: C, mut input: I) -> C::Return
     where
-        F: FnMut(O) -> I,
-        C: Sans<I, O>,
+        F: FnMut(C::Output) -> I,
+        C: Sans<I>,
     {
         loop {
             match coro.next(input) {
@@ -170,10 +170,10 @@ impl<F> Handler<F> {
     /// let result = handler.handle_yielded(yielded);
     /// assert_eq!(result, 20);
     /// ```
-    pub fn handle_yielded<S, I, O>(mut self, yielded: Yielded<O, S>) -> S::Return
+    pub fn handle_yielded<S, I>(mut self, yielded: Yielded<S::Output, S>) -> S::Return
     where
-        F: FnMut(O) -> I,
-        S: Sans<I, O>,
+        F: FnMut(S::Output) -> I,
+        S: Sans<I>,
     {
         let (initial_output, coro) = yielded.split();
         let initial_input = (self.func)(initial_output);
@@ -200,10 +200,10 @@ impl<F> Handler<F> {
     /// let result: Result<i32, _> = handler.handle_result(coro, 5);
     /// assert_eq!(result, Ok(11));
     /// ```
-    pub fn handle_result<C, I, O, E>(mut self, mut coro: C, mut input: I) -> Result<C::Return, E>
+    pub fn handle_result<C, I, E>(mut self, mut coro: C, mut input: I) -> Result<C::Return, E>
     where
-        F: FnMut(O) -> Result<I, E>,
-        C: Sans<I, O>,
+        F: FnMut(C::Output) -> Result<I, E>,
+        C: Sans<I>,
     {
         loop {
             match coro.next(input) {
@@ -231,13 +231,13 @@ impl<F> Handler<F> {
     /// let result: Result<i32, _> = handler.handle_yielded_result(yielded);
     /// assert_eq!(result, Ok(20));
     /// ```
-    pub fn handle_yielded_result<S, I, O, E>(
+    pub fn handle_yielded_result<S, I, E>(
         mut self,
-        yielded: Yielded<O, S>,
+        yielded: Yielded<S::Output, S>,
     ) -> Result<S::Return, E>
     where
-        F: FnMut(O) -> Result<I, E>,
-        S: Sans<I, O>,
+        F: FnMut(S::Output) -> Result<I, E>,
+        S: Sans<I>,
     {
         let (initial_output, coro) = yielded.split();
         let initial_input = (self.func)(initial_output)?;
@@ -312,11 +312,11 @@ impl<F> HandlerAsync<F> {
     /// assert_eq!(result, 6);
     /// # }
     /// ```
-    pub async fn handle<C, I, O, Fut>(mut self, mut coro: C, mut input: I) -> C::Return
+    pub async fn handle<C, I, Fut>(mut self, mut coro: C, mut input: I) -> C::Return
     where
-        F: FnMut(O) -> Fut,
+        F: FnMut(C::Output) -> Fut,
         Fut: Future<Output = I>,
-        C: Sans<I, O>,
+        C: Sans<I>,
     {
         loop {
             match coro.next(input) {
@@ -344,11 +344,11 @@ impl<F> HandlerAsync<F> {
     /// assert_eq!(result, 10);
     /// # }
     /// ```
-    pub async fn handle_yielded<S, I, O, Fut>(mut self, yielded: Yielded<O, S>) -> S::Return
+    pub async fn handle_yielded<S, I, Fut>(mut self, yielded: Yielded<S::Output, S>) -> S::Return
     where
-        F: FnMut(O) -> Fut,
+        F: FnMut(S::Output) -> Fut,
         Fut: Future<Output = I>,
-        S: Sans<I, O>,
+        S: Sans<I>,
     {
         let (initial_output, coro) = yielded.split();
         let initial_input = (self.func)(initial_output).await;
@@ -376,15 +376,15 @@ impl<F> HandlerAsync<F> {
     /// assert_eq!(result, Ok(6));
     /// # }
     /// ```
-    pub async fn handle_result<C, I, O, E, Fut>(
+    pub async fn handle_result<C, I, E, Fut>(
         mut self,
         mut coro: C,
         mut input: I,
     ) -> Result<C::Return, E>
     where
-        F: FnMut(O) -> Fut,
+        F: FnMut(C::Output) -> Fut,
         Fut: Future<Output = Result<I, E>>,
-        C: Sans<I, O>,
+        C: Sans<I>,
     {
         loop {
             match coro.next(input) {
@@ -415,14 +415,14 @@ impl<F> HandlerAsync<F> {
     /// assert_eq!(result, Ok(10));
     /// # }
     /// ```
-    pub async fn handle_yielded_result<S, I, O, E, Fut>(
+    pub async fn handle_yielded_result<S, I, E, Fut>(
         mut self,
-        yielded: Yielded<O, S>,
+        yielded: Yielded<S::Output, S>,
     ) -> Result<S::Return, E>
     where
-        F: FnMut(O) -> Fut,
+        F: FnMut(S::Output) -> Fut,
         Fut: Future<Output = Result<I, E>>,
-        S: Sans<I, O>,
+        S: Sans<I>,
     {
         let (initial_output, coro) = yielded.split();
         let initial_input = (self.func)(initial_output).await?;

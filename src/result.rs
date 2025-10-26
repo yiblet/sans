@@ -64,13 +64,14 @@ pub fn short_circuit<S, E>(coro: S) -> ShortCircuit<S, E> {
     }
 }
 
-impl<I, O, E, S> Sans<I, O> for ShortCircuit<S, E>
+impl<I, O, E, S> Sans<I> for ShortCircuit<S, E>
 where
-    S: Sans<I, Result<O, E>>,
+    S: Sans<I, Output = Result<O, E>>,
 {
+    type Output = O;
     type Return = Result<S::Return, E>;
 
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         match self.coro.next(input) {
             Step::Yielded(Ok(o)) => Step::Yielded(o),
             Step::Yielded(Err(e)) => Step::Complete(Err(e)),
@@ -119,10 +120,10 @@ pub struct OkChain<S, R> {
 /// // Now in second coro
 /// assert_eq!(chained.next(10).unwrap_yielded(), 11);
 /// ```
-pub fn ok_chain<I, O, E, S, R>(coro: S, next: R) -> OkChain<S, R>
+pub fn ok_chain<I, E, S, R>(coro: S, next: R) -> OkChain<S, R>
 where
-    S: Sans<I, O, Return = Result<I, E>>,
-    R: Sans<I, O>,
+    S: Sans<I, Return = Result<I, E>>,
+    R: Sans<I, Output = S::Output>,
 {
     OkChain {
         coro: Some(coro),
@@ -130,14 +131,15 @@ where
     }
 }
 
-impl<I, O, E, S, R> Sans<I, O> for OkChain<S, R>
+impl<I, E, S, R> Sans<I> for OkChain<S, R>
 where
-    S: Sans<I, O, Return = Result<I, E>>,
-    R: Sans<I, O>,
+    S: Sans<I, Return = Result<I, E>>,
+    R: Sans<I, Output = S::Output>,
 {
+    type Output = S::Output;
     type Return = Result<R::Return, E>;
 
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         if self.coro.is_none() {
             return self.next.next(input).map_complete(Ok);
         }
@@ -198,13 +200,14 @@ pub fn flatten<S>(coro: S) -> Flatten<S> {
     Flatten { coro }
 }
 
-impl<I, O, T, E, S> Sans<I, O> for Flatten<S>
+impl<I, T, E, S> Sans<I> for Flatten<S>
 where
-    S: Sans<I, O, Return = Result<Result<T, E>, E>>,
+    S: Sans<I, Return = Result<Result<T, E>, E>>,
 {
+    type Output = S::Output;
     type Return = Result<T, E>;
 
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         match self.coro.next(input) {
             Step::Yielded(o) => Step::Yielded(o),
             Step::Complete(Ok(Ok(t))) => Step::Complete(Ok(t)),
@@ -217,12 +220,12 @@ where
 /// Extension trait for `Sans` that provides result combinator methods.
 ///
 /// This trait is automatically implemented for all types that implement `Sans`.
-pub trait TrySans<I, O>: Sized {
+pub trait TrySans<I>: Sized {
     /// Chains to another coroutine only if the first returns `Ok`.
     fn ok_chain<E, R>(self, next: R) -> OkChain<Self, R>
     where
-        Self: Sans<I, O, Return = Result<I, E>>,
-        R: Sans<I, O>,
+        Self: Sans<I, Return = Result<I, E>>,
+        R: Sans<I, Output = Self::Output>,
     {
         ok_chain(self, next)
     }
@@ -230,13 +233,13 @@ pub trait TrySans<I, O>: Sized {
     /// Flattens nested `Result` types in the return value.
     fn flatten<T, E>(self) -> Flatten<Self>
     where
-        Self: Sans<I, O, Return = Result<Result<T, E>, E>>,
+        Self: Sans<I, Return = Result<Result<T, E>, E>>,
     {
         flatten(self)
     }
 }
 
-impl<I, O, S> TrySans<I, O> for S where S: Sans<I, O> {}
+impl<I, S> TrySans<I> for S where S: Sans<I> {}
 
 #[cfg(test)]
 mod tests {

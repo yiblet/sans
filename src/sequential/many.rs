@@ -32,9 +32,9 @@ use crate::{Sans, Step};
 /// // Second completes with 20
 /// assert_eq!(coro.next(20).unwrap_complete(), 20);
 /// ```
-pub fn many<const N: usize, I, O, S>(rest: [S; N]) -> Many<N, S>
+pub fn many<const N: usize, I, S>(rest: [S; N]) -> Many<N, S>
 where
-    S: Sans<I, O, Return = I>,
+    S: Sans<I, Return = I>,
 {
     Many {
         states: rest.map(|r| Some(r)),
@@ -50,12 +50,13 @@ pub struct Many<const N: usize, S> {
     index: usize,
 }
 
-impl<const N: usize, I, O, S> Sans<I, O> for Many<N, S>
+impl<const N: usize, I, S> Sans<I> for Many<N, S>
 where
-    S: Sans<I, O, Return = I>,
+    S: Sans<I, Return = I>,
 {
-    type Return = S::Return;
-    fn next(&mut self, mut input: I) -> Step<O, Self::Return> {
+    type Output = S::Output;
+    type Return = I;
+    fn next(&mut self, mut input: I) -> Step<Self::Output, Self::Return> {
         loop {
             match self.states.get_mut(self.index) {
                 Some(Some(s)) => match s.next(input) {

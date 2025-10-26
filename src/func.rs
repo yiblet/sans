@@ -9,13 +9,14 @@ use crate::{Sans, step::Step};
 /// Wraps a closure so it implements [`Sans`].
 pub struct FromFn<F>(F);
 
-impl<I, O, D, F> Sans<I, O> for FromFn<F>
+impl<I, O, D, F> Sans<I> for FromFn<F>
 where
     F: FnMut(I) -> Step<O, D>,
 {
+    type Output = O;
     type Return = D;
 
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         (self.0)(input)
     }
 }
@@ -38,13 +39,14 @@ pub fn from_fn<F>(f: F) -> FromFn<F> {
 /// Wraps a fallible closure so it implements [`Sans`].
 pub struct TryFromFn<F>(F);
 
-impl<I, O, D, E, F> Sans<I, O> for TryFromFn<F>
+impl<I, O, D, E, F> Sans<I> for TryFromFn<F>
 where
     F: FnMut(I) -> Result<Step<O, D>, E>,
 {
+    type Output = O;
     type Return = Result<D, E>;
 
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         match (self.0)(input) {
             Ok(Step::Yielded(output)) => Step::Yielded(output),
             Ok(Step::Complete(done)) => Step::Complete(Ok(done)),
@@ -83,13 +85,14 @@ pub fn try_from_fn<F>(f: F) -> TryFromFn<F> {
 /// Never completes on its own - will continue processing until externally stopped.
 pub struct Repeat<F>(F);
 
-impl<I, O, F> Sans<I, O> for Repeat<F>
+impl<I, O, F> Sans<I> for Repeat<F>
 where
     F: FnMut(I) -> O,
 {
+    type Output = O;
     type Return = I;
 
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         Step::Yielded(self.0(input))
     }
 }
@@ -126,13 +129,14 @@ pub fn once<F>(f: F) -> Once<F> {
     Once(Some(f))
 }
 
-impl<I, O, F> Sans<I, O> for Once<F>
+impl<I, O, F> Sans<I> for Once<F>
 where
     F: FnOnce(I) -> O,
 {
+    type Output = O;
     type Return = I;
 
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
+    fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         match self.0.take() {
             Some(f) => Step::Yielded(f(input)),
             None => Step::Complete(input),
