@@ -161,12 +161,12 @@ impl fmt::Display for PoisonError {
 
 impl std::error::Error for PoisonError {}
 
-impl<I, C> Sans<I> for Arc<Mutex<C>>
+impl<I, S> Sans<I> for Arc<Mutex<S>>
 where
-    C: Sans<I>,
+    S: Sans<I>,
 {
-    type Output = C::Output;
-    type Return = Result<C::Return, PoisonError>;
+    type Output = S::Output;
+    type Return = Result<S::Return, PoisonError>;
     fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         match self.lock().map_err(|_| PoisonError) {
             Ok(mut f) => f.next(input).map_complete(Ok),
@@ -175,27 +175,27 @@ where
     }
 }
 
-impl<I, C> Sans<I> for Rc<RefCell<C>>
+impl<I, S> Sans<I> for Rc<RefCell<S>>
 where
-    C: Sans<I>,
+    S: Sans<I>,
 {
-    type Output = C::Output;
-    type Return = C::Return;
+    type Output = S::Output;
+    type Return = S::Return;
     fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         let mut v = self.as_ref().borrow_mut();
         v.next(input)
     }
 }
 
-impl<I, C> Sans<I> for Option<C>
+impl<I, S> Sans<I> for Option<S>
 where
-    C: Sans<I>,
+    S: Sans<I>,
 {
-    type Output = C::Output;
-    type Return = Option<C::Return>;
+    type Output = S::Output;
+    type Return = Option<S::Return>;
     fn next(&mut self, input: I) -> Step<Self::Output, Self::Return> {
         match self {
-            Some(c) => c.next(input).map_complete(Some),
+            Some(s) => s.next(input).map_complete(Some),
             None => Step::Complete(None),
         }
     }

@@ -35,10 +35,10 @@ use std::future::Future;
 /// let result = handle(coro, 5, |output| output + 1);
 /// assert_eq!(result, 11);
 /// ```
-pub fn handle<C, I, F>(coro: C, input: I, responder: F) -> C::Return
+pub fn handle<S, I, F>(coro: S, input: I, responder: F) -> S::Return
 where
-    C: Sans<I>,
-    F: FnMut(C::Output) -> I,
+    S: Sans<I>,
+    F: FnMut(S::Output) -> I,
 {
     Handler::new(responder).handle(coro, input)
 }
@@ -71,10 +71,10 @@ where
 /// assert_eq!(result, 11);
 /// # }
 /// ```
-pub async fn handle_async<C, I, F, Fut>(coro: C, input: I, responder: F) -> C::Return
+pub async fn handle_async<S, I, F, Fut>(coro: S, input: I, responder: F) -> S::Return
 where
-    C: Sans<I>,
-    F: FnMut(C::Output) -> Fut,
+    S: Sans<I>,
+    F: FnMut(S::Output) -> Fut,
     Fut: Future<Output = I>,
 {
     HandlerAsync::new(responder).handle(coro, input).await
@@ -140,10 +140,10 @@ impl<F> Handler<F> {
     /// let result = handler.handle(coro, 5);
     /// assert_eq!(result, 11);
     /// ```
-    pub fn handle<C, I>(mut self, mut coro: C, mut input: I) -> C::Return
+    pub fn handle<S, I>(mut self, mut coro: S, mut input: I) -> S::Return
     where
-        F: FnMut(C::Output) -> I,
-        C: Sans<I>,
+        F: FnMut(S::Output) -> I,
+        S: Sans<I>,
     {
         loop {
             match coro.next(input) {
@@ -200,10 +200,10 @@ impl<F> Handler<F> {
     /// let result: Result<i32, _> = handler.handle_result(coro, 5);
     /// assert_eq!(result, Ok(11));
     /// ```
-    pub fn handle_result<C, I, E>(mut self, mut coro: C, mut input: I) -> Result<C::Return, E>
+    pub fn handle_result<S, I, E>(mut self, mut coro: S, mut input: I) -> Result<S::Return, E>
     where
-        F: FnMut(C::Output) -> Result<I, E>,
-        C: Sans<I>,
+        F: FnMut(S::Output) -> Result<I, E>,
+        S: Sans<I>,
     {
         loop {
             match coro.next(input) {
@@ -312,11 +312,11 @@ impl<F> HandlerAsync<F> {
     /// assert_eq!(result, 6);
     /// # }
     /// ```
-    pub async fn handle<C, I, Fut>(mut self, mut coro: C, mut input: I) -> C::Return
+    pub async fn handle<S, I, Fut>(mut self, mut coro: S, mut input: I) -> S::Return
     where
-        F: FnMut(C::Output) -> Fut,
+        F: FnMut(S::Output) -> Fut,
         Fut: Future<Output = I>,
-        C: Sans<I>,
+        S: Sans<I>,
     {
         loop {
             match coro.next(input) {
@@ -376,15 +376,15 @@ impl<F> HandlerAsync<F> {
     /// assert_eq!(result, Ok(6));
     /// # }
     /// ```
-    pub async fn handle_result<C, I, E, Fut>(
+    pub async fn handle_result<S, I, E, Fut>(
         mut self,
-        mut coro: C,
+        mut coro: S,
         mut input: I,
-    ) -> Result<C::Return, E>
+    ) -> Result<S::Return, E>
     where
-        F: FnMut(C::Output) -> Fut,
+        F: FnMut(S::Output) -> Fut,
         Fut: Future<Output = Result<I, E>>,
-        C: Sans<I>,
+        S: Sans<I>,
     {
         loop {
             match coro.next(input) {
