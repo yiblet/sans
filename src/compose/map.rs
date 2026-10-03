@@ -1,19 +1,14 @@
-//! Transforming coroutine inputs, outputs, and return values.
-//!
-//! This module provides [`MapInput`], [`MapYield`], and [`MapReturn`] combinators
-//! for adapting coroutines to different types.
+//! Convert coroutine inputs, yielded outputs, or final results.
 
 use crate::{InitSans, Sans, step::Step};
 
-/// Transforms input before passing it to the wrapped coroutine.
-///
-/// Useful for adapting between different input types or preprocessing data.
+/// Convert inputs before passing them to the coroutine. See [`map_input`].
 pub struct MapInput<S, F> {
     f: F,
     coro: S,
 }
 
-/// Create a coroutine that transforms input before passing it to the wrapped coroutine.
+/// Convert inputs before passing them to the coroutine.
 ///
 /// # Examples
 ///
@@ -26,17 +21,6 @@ pub struct MapInput<S, F> {
 /// assert_eq!(mapped.next("5").unwrap_yielded(), 10);
 /// ```
 pub fn map_input<S, F>(f: F, coro: S) -> MapInput<S, F> {
-    MapInput { f, coro }
-}
-
-/// Create a MapInput from an InitSans coroutine.
-///
-/// This is used when applying input transformation to a coroutine that yields immediately.
-pub fn init_map_input<I1, I2, O, S, F>(f: F, coro: S) -> MapInput<S, F>
-where
-    S: InitSans<I2, O>,
-    F: FnMut(I1) -> I2,
-{
     MapInput { f, coro }
 }
 
@@ -73,16 +57,14 @@ where
     }
 }
 
-/// Transforms yielded values from the wrapped coroutine.
-///
-/// Allows converting or formatting output without changing the underlying computation.
+/// Convert yielded outputs. See [`map_yield`].
 pub struct MapYield<S, F, I, O1> {
     f: F,
     coro: S,
     _phantom: std::marker::PhantomData<(I, O1)>,
 }
 
-/// Create a coroutine that transforms yielded values from the wrapped coroutine.
+/// Convert yielded outputs.
 ///
 /// # Examples
 ///
@@ -106,9 +88,7 @@ where
     }
 }
 
-/// Create a MapYield from an InitSans coroutine.
-///
-/// This is used when applying yield transformation to a coroutine that yields immediately.
+/// Convert outputs from an [`InitSans`], including its initial output. See [`map_yield`].
 pub fn init_map_yield<I, O1, O2, S, F>(f: F, coro: S) -> MapYield<S, F, I, O1>
 where
     S: InitSans<I, O1>,
@@ -161,15 +141,13 @@ where
     }
 }
 
-/// Transforms the final result from the wrapped coroutine.
-///
-/// Applied only when the computation completes, not to intermediate yields.
+/// Convert the final result. See [`map_return`].
 pub struct MapReturn<S, F> {
     f: F,
     coro: S,
 }
 
-/// Create a coroutine that transforms the final result from the wrapped coroutine.
+/// Convert the final result.
 ///
 /// # Examples
 ///
@@ -179,24 +157,10 @@ pub struct MapReturn<S, F> {
 /// let coro = once(|x: i32| x + 5);
 /// let mut mapped = map_return(|r: i32| r * 10, coro);
 ///
-/// // Yield is not transformed
 /// assert_eq!(mapped.next(10).unwrap_yielded(), 15);
-/// // Return is transformed: 20 * 10 = 200
 /// assert_eq!(mapped.next(20).unwrap_complete(), 200);
 /// ```
 pub fn map_return<S, F>(f: F, coro: S) -> MapReturn<S, F> {
-    MapReturn { f, coro }
-}
-
-/// Create a MapReturn from an InitSans coroutine.
-///
-/// This is used when applying return transformation to a coroutine that yields immediately.
-pub fn init_map_return<I, O, D1, D2, S, F>(f: F, coro: S) -> MapReturn<S, F>
-where
-    S: InitSans<I, O>,
-    S::Next: Sans<I, O, Return = D1>,
-    F: FnMut(D1) -> D2,
-{
     MapReturn { f, coro }
 }
 

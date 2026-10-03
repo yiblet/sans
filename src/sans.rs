@@ -1,27 +1,3 @@
-//! Core trait for stateful coroutines.
-//!
-//! This module defines the [`Sans`] trait, the fundamental building block for
-//! coroutine-based programming in this library. A [`Sans`] represents a stateful
-//! computation that can process input values and yield intermediate results.
-//!
-//! # The Sans Trait
-//!
-//! [`Sans<I, O>`] represents a computation that:
-//! - Takes input of type `I`
-//! - Yields intermediate values of type `O`
-//! - Eventually completes with a final value of type `Return`
-//!
-//! # Examples
-//!
-//! ```rust
-//! use sans::prelude::*;
-//!
-//! // Create a coroutine that processes one input then completes
-//! let mut coro = once(|x: i32| x * 2);
-//! assert_eq!(coro.next(5).unwrap_yielded(), 10);
-//! assert_eq!(coro.next(3).unwrap_complete(), 3);
-//! ```
-
 use std::{
     cell::RefCell,
     fmt,
@@ -32,50 +8,53 @@ use std::{
 use crate::{
     InitSans,
     build::{Once, Repeat, once, repeat},
-    compose::{AndThen, Chain, MapInput, MapReturn, MapYield, and_then, chain},
+    compose::{AndThen, Chain, MapInput, MapReturn, MapYield, WithState, and_then, chain},
     iter::SansIter,
     step::Step,
 };
 
-/// Core trait for stateful computations that process input and yield intermediate values.
+/// A coroutine that accepts input and yields an output or a final result.
 ///
-/// Each call to `next()` either yields an intermediate result or signals completion.
-/// This allows building composable, resumable computations.
+/// Call [`next`](Self::next) to supply input and advance one step.
+/// Stop after [`Step::Complete`]; further calls may panic.
+/// To start without caller input, use [`InitSans`].
 ///
 /// ```rust
 /// use sans::prelude::*;
 ///
 /// let mut coro = once(|x: i32| x * 2);
 /// assert_eq!(coro.next(5).unwrap_yielded(), 10);
-/// assert_eq!(coro.next(3).unwrap_complete(), 3); // return
+/// assert_eq!(coro.next(3).unwrap_complete(), 3);
 /// ```
 pub trait Sans<I, O> {
-    /// Type of final result when computation completes
+    /// The final result type.
     type Return;
 
-    /// Process input, returning `Yield` to continue or `Return` to complete.
+    /// Process input, returning [`Step::Yielded`] to continue or [`Step::Complete`] to finish.
     fn next(&mut self, input: I) -> Step<O, Self::Return>;
 
-    /// Chain with a coroutine created from this coroutine's return value.
-    ///
-    /// The function `f` receives the return value and must produce an [`InitSans`].
-    /// Use [`init()`](crate::build::init) to wrap a `Sans`:
+    /// Create the next coroutine from this coroutine's final result.
     ///
     /// ```rust
     /// use sans::prelude::*;
     ///
     /// let mut coro = once(|x: i32| x * 2)
-    ///     .and_then(|val| init(val, repeat(move |x| x + val)));
+    ///     .and_then(|result| init(result, once(move |x| x + result)));
+    /// assert_eq!(coro.next(5).unwrap_yielded(), 10);
+    /// assert_eq!(coro.next(3).unwrap_yielded(), 3); // Start the next coroutine.
+    /// assert_eq!(coro.next(4).unwrap_yielded(), 7);
+    /// assert_eq!(coro.next(9).unwrap_complete(), 9);
     /// ```
     fn and_then<T, F>(self, f: F) -> AndThen<Self, T::Next, F>
     where
-        Self: Sized + Sans<I, O, Return = I>,
+        Self: Sized,
         T: InitSans<I, O>,
         F: FnOnce(Self::Return) -> T,
     {
         and_then(self, f)
     }
 
+    /// Box this coroutine as a `dyn Sans`.
     fn boxed(self) -> Box<dyn Sans<I, O, Return = Self::Return>>
     where
         Self: Sized + 'static,
@@ -83,7 +62,9 @@ pub trait Sans<I, O> {
         Box::new(self)
     }
 
-    /// Chain with another coroutine.
+    /// Pass the final result to the next coroutine as its first input.
+    ///
+    /// Use [`and_then`](Self::and_then) to create that coroutine from the result.
     fn chain<R>(self, r: R) -> Chain<Self, R>
     where
         Self: Sized + Sans<I, O, Return = I>,
@@ -92,7 +73,7 @@ pub trait Sans<I, O> {
         chain(self, r)
     }
 
-    /// Chain with a function that executes once.
+    /// Pass the final result to a function that yields once.
     fn chain_once<F>(self, f: F) -> Chain<Self, Once<F>>
     where
         Self: Sized + Sans<I, O, Return = I>,
@@ -101,7 +82,7 @@ pub trait Sans<I, O> {
         chain(self, once(f))
     }
 
-    /// Chain with a function that repeats indefinitely.
+    /// Continue with a function that yields for every input.
     fn chain_repeat<F>(self, f: F) -> Chain<Self, Repeat<F>>
     where
         Self: Sized + Sans<I, O, Return = I>,
@@ -110,7 +91,9 @@ pub trait Sans<I, O> {
         chain(self, repeat(f))
     }
 
-    /// Transform inputs before they reach this coroutine.
+    /// Convert inputs before passing them to the coroutine.
+    ///
+    /// See [`map_input`](crate::compose::map_input) for an example.
     fn map_input<I2, F>(self, f: F) -> MapInput<Self, F>
     where
         Self: Sized,
@@ -119,7 +102,26 @@ pub trait Sans<I, O> {
         crate::compose::map_input(f, self)
     }
 
-    /// Transform yielded values before returning them.
+    /// Share state between input processing and completion.
+    ///
+    /// See [`with_state`](crate::compose::with_state) for an example.
+    fn with_state<State, I2, R, Input, Finish>(
+        self,
+        state: State,
+        input: Input,
+        finish: Finish,
+    ) -> WithState<Self, State, Input, Finish>
+    where
+        Self: Sized,
+        Input: FnMut(&mut State, I2) -> I,
+        Finish: FnOnce(State, Self::Return) -> R,
+    {
+        crate::compose::with_state(self, state, input, finish)
+    }
+
+    /// Convert yielded outputs.
+    ///
+    /// See [`map_yield`](crate::compose::map_yield) for an example.
     fn map_yield<O2, F>(self, f: F) -> MapYield<Self, F, I, O>
     where
         Self: Sized,
@@ -128,7 +130,9 @@ pub trait Sans<I, O> {
         crate::compose::map_yield(f, self)
     }
 
-    /// Transform the final result when completing.
+    /// Convert the final result.
+    ///
+    /// See [`map_return`](crate::compose::map_return) for an example.
     fn map_return<D2, F>(self, f: F) -> MapReturn<Self, F>
     where
         Self: Sized,
@@ -137,7 +141,7 @@ pub trait Sans<I, O> {
         crate::compose::map_return(f, self)
     }
 
-    /// Convert to an iterator.
+    /// Iterate over outputs, supplying `()` as each input.
     fn into_iter(self) -> SansIter<O, Self>
     where
         Self: Sized + Sans<(), O>,
@@ -146,6 +150,7 @@ pub trait Sans<I, O> {
     }
 }
 
+/// The mutex around a shared coroutine was poisoned.
 #[derive(Debug)]
 pub struct PoisonError;
 
@@ -227,6 +232,40 @@ impl<I, O, D> Sans<I, O> for &'_ mut dyn Sans<I, O, Return = D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_and_then_accepts_return_different_from_input() {
+        let first = crate::build::from_fn(|input: i32| -> Step<i32, String> {
+            Step::Complete(format!("return={input}"))
+        });
+        let mut coro = first.and_then(|returned: String| {
+            assert_eq!(returned, "return=7");
+            crate::build::init(
+                42,
+                crate::build::from_fn(move |input: i32| -> Step<i32, String> {
+                    Step::Complete(format!("{returned}, next={input}"))
+                }),
+            )
+        });
+
+        assert_eq!(coro.next(7).unwrap_yielded(), 42);
+        assert_eq!(coro.next(9).unwrap_complete(), "return=7, next=9");
+    }
+
+    #[test]
+    fn test_and_then_second_initializer_completes_immediately() {
+        let first = crate::build::from_fn(|input: i32| -> Step<i32, String> {
+            Step::Complete(format!("return={input}"))
+        });
+        let mut coro = first.and_then(|returned: String| {
+            type Continuation = Box<dyn Sans<i32, i32, Return = String>>;
+            let complete: Step<(i32, Continuation), String> =
+                Step::Complete(format!("finished: {returned}"));
+            complete
+        });
+
+        assert_eq!(coro.next(7).unwrap_complete(), "finished: return=7");
+    }
 
     #[test]
     fn test_chain_switches_to_second_coroutine_after_first_done() {

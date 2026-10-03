@@ -1,89 +1,29 @@
-//! The result type for coroutine steps.
-//!
-//! This module defines the [`Step`] enum, which represents the outcome of executing
-//! one step of a coroutine. It's analogous to how `Option` represents optional values
-//! or `Result` represents fallible operations.
-//!
-//! # Examples
-//!
-//! ```rust
-//! use sans::Step;
-//!
-//! // A computation that continues
-//! let continuing: Step<i32, String> = Step::Yielded(42);
-//!
-//! // A computation that completes
-//! let completed: Step<i32, String> = Step::Complete("done".to_string());
-//! ```
-
-/// Result of a computation step, either yielding a value to continue or completing with a final value.
+/// A step that yields an output or completes with a final result.
 ///
-/// `Step` is the return type for coroutine computations, similar to how `Option` represents
-/// optional values and `Result` represents fallible operations.
-///
-/// # Examples
-///
-/// ```rust
-/// use sans::Step;
-///
-/// let continuing: Step<i32, String> = Step::Yielded(42);
-/// let completed: Step<i32, String> = Step::Complete("finished".to_string());
-///
-/// // Using combinators
-/// let doubled = continuing.map_yielded(|x| x * 2);
-/// assert_eq!(doubled, Step::Yielded(84));
-/// ```
+/// [`Sans::next`](crate::Sans::next) returns this enum.
+/// [`InitSans::init`](crate::InitSans::init) includes a continuation with its output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Step<Y, D> {
-    /// Continue computation with an intermediate yield value
+    /// An output; the coroutine can accept more input.
     Yielded(Y),
-    /// Complete computation with a final value
+    /// The final result; stop calling the coroutine.
     Complete(D),
 }
 
 impl<Y, D> Step<Y, D> {
     /// Returns `true` if the step is `Yielded`.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use sans::Step;
-    ///
-    /// let x: Step<i32, &str> = Step::Yielded(42);
-    /// assert!(x.is_yielded());
-    ///
-    /// let y: Step<i32, &str> = Step::Complete("complete");
-    /// assert!(!y.is_yielded());
-    /// ```
     #[inline]
     pub const fn is_yielded(&self) -> bool {
         matches!(self, Step::Yielded(_))
     }
 
     /// Returns `true` if the step is `Complete`.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use sans::Step;
-    ///
-    /// let x: Step<i32, &str> = Step::Complete("complete");
-    /// assert!(x.is_complete());
-    ///
-    /// let y: Step<i32, &str> = Step::Yielded(42);
-    /// assert!(!y.is_complete());
-    /// ```
     #[inline]
     pub const fn is_complete(&self) -> bool {
         matches!(self, Step::Complete(_))
     }
 
-    /// Converts from `Step<Y, D>` to `Option<Y>`.
-    ///
-    /// Converts `self` into an `Option<Y>`, consuming `self`,
-    /// and discarding the complete value, if any.
-    ///
-    /// # Examples
+    /// Take the yielded output, or `None` if complete.
     ///
     /// ```rust
     /// use sans::Step;
@@ -102,12 +42,7 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Converts from `Step<Y, D>` to `Option<D>`.
-    ///
-    /// Converts `self` into an `Option<D>`, consuming `self`,
-    /// and discarding the yield value, if any.
-    ///
-    /// # Examples
+    /// Take the final result, or `None` if yielded.
     ///
     /// ```rust
     /// use sans::Step;
@@ -126,9 +61,7 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Maps a `Step<Y, D>` to `Step<Y, D2>` by applying a function to the complete value.
-    ///
-    /// # Examples
+    /// Convert the final result, leaving yielded outputs unchanged.
     ///
     /// ```rust
     /// use sans::Step;
@@ -150,9 +83,7 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Maps a `Step<Y, D>` to `Step<Y2, D>` by applying a function to the yielded value.
-    ///
-    /// # Examples
+    /// Convert the yielded output, leaving final results unchanged.
     ///
     /// ```rust
     /// use sans::Step;
@@ -174,9 +105,7 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Maps a `Step<Y, D>` to `Step<Y2, D2>` by applying functions to both values.
-    ///
-    /// # Examples
+    /// Convert the value with the function for its variant.
     ///
     /// ```rust
     /// use sans::Step;
@@ -201,8 +130,6 @@ impl<Y, D> Step<Y, D> {
 
     /// Returns the yielded value or a default.
     ///
-    /// # Examples
-    ///
     /// ```rust
     /// use sans::Step;
     ///
@@ -220,9 +147,7 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Returns the yielded value or computes it from a closure.
-    ///
-    /// # Examples
+    /// Return the yielded output, or call `f` if complete.
     ///
     /// ```rust
     /// use sans::Step;
@@ -244,9 +169,7 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Returns the complete value or a default.
-    ///
-    /// # Examples
+    /// Return the final result or a default.
     ///
     /// ```rust
     /// use sans::Step;
@@ -265,9 +188,7 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Returns the complete value or computes it from a closure.
-    ///
-    /// # Examples
+    /// Return the final result, or call `f` if yielded.
     ///
     /// ```rust
     /// use sans::Step;
@@ -289,9 +210,7 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Converts from `&Step<Y, D>` to `Step<&Y, &D>`.
-    ///
-    /// # Examples
+    /// Borrow the contained value, keeping its variant.
     ///
     /// ```rust
     /// use sans::Step;
@@ -310,9 +229,7 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Converts from `&mut Step<Y, D>` to `Step<&mut Y, &mut D>`.
-    ///
-    /// # Examples
+    /// Mutably borrow the contained value, keeping its variant.
     ///
     /// ```rust
     /// use sans::Step;
@@ -331,9 +248,7 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Converts from `Step<Y, D>` to `Step<D, Y>` by swapping variants.
-    ///
-    /// # Examples
+    /// Swap `Yielded` and `Complete`, keeping the contained value.
     ///
     /// ```rust
     /// use sans::Step;
@@ -352,9 +267,7 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Returns `true` if the step is a `Yielded` value containing the given value.
-    ///
-    /// # Examples
+    /// Return whether the yielded output equals `y`.
     ///
     /// ```rust
     /// use sans::Step;
@@ -374,9 +287,7 @@ impl<Y, D> Step<Y, D> {
         matches!(self, Step::Yielded(v) if y == v)
     }
 
-    /// Returns `true` if the step is a `Complete` value containing the given value.
-    ///
-    /// # Examples
+    /// Return whether the final result equals `d`.
     ///
     /// ```rust
     /// use sans::Step;
@@ -396,11 +307,11 @@ impl<Y, D> Step<Y, D> {
         matches!(self, Step::Complete(v) if d == v)
     }
 
-    /// Returns the contained `Yielded` value, consuming the `self` value.
+    /// Take the yielded output.
     ///
     /// # Panics
     ///
-    /// Panics if the value is a `Complete` with a custom panic message provided by `msg`.
+    /// Panics with `msg` if complete.
     ///
     /// # Examples
     ///
@@ -410,13 +321,6 @@ impl<Y, D> Step<Y, D> {
     /// let x: Step<i32, &str> = Step::Yielded(42);
     /// assert_eq!(x.expect_yielded("was complete"), 42);
     /// ```
-    ///
-    /// ```should_panic
-    /// use sans::Step;
-    ///
-    /// let x: Step<i32, &str> = Step::Complete("complete");
-    /// x.expect_yielded("the world is ending"); // panics with "the world is ending"
-    /// ```
     #[inline]
     pub fn expect_yielded(self, msg: &str) -> Y {
         match self {
@@ -425,11 +329,11 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Returns the contained `Complete` value, consuming the `self` value.
+    /// Take the final result.
     ///
     /// # Panics
     ///
-    /// Panics if the value is a `Yielded` with a custom panic message provided by `msg`.
+    /// Panics with `msg` if yielded.
     ///
     /// # Examples
     ///
@@ -439,13 +343,6 @@ impl<Y, D> Step<Y, D> {
     /// let x: Step<i32, &str> = Step::Complete("complete");
     /// assert_eq!(x.expect_complete("was yielding"), "complete");
     /// ```
-    ///
-    /// ```should_panic
-    /// use sans::Step;
-    ///
-    /// let x: Step<i32, &str> = Step::Yielded(42);
-    /// x.expect_complete("the world is ending"); // panics with "the world is ending"
-    /// ```
     #[inline]
     pub fn expect_complete(self, msg: &str) -> D {
         match self {
@@ -454,11 +351,11 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Returns the contained `Yielded` value, consuming the `self` value.
+    /// Take the yielded output.
     ///
     /// # Panics
     ///
-    /// Panics if the value is a `Complete`.
+    /// Panics if complete.
     ///
     /// # Examples
     ///
@@ -468,13 +365,6 @@ impl<Y, D> Step<Y, D> {
     /// let x: Step<i32, &str> = Step::Yielded(42);
     /// assert_eq!(x.unwrap_yielded(), 42);
     /// ```
-    ///
-    /// ```should_panic
-    /// use sans::Step;
-    ///
-    /// let x: Step<i32, &str> = Step::Complete("complete");
-    /// x.unwrap_yielded(); // panics
-    /// ```
     #[inline]
     pub fn unwrap_yielded(self) -> Y {
         match self {
@@ -483,11 +373,11 @@ impl<Y, D> Step<Y, D> {
         }
     }
 
-    /// Returns the contained `Complete` value, consuming the `self` value.
+    /// Take the final result.
     ///
     /// # Panics
     ///
-    /// Panics if the value is a `Yielded`.
+    /// Panics if yielded.
     ///
     /// # Examples
     ///
@@ -496,13 +386,6 @@ impl<Y, D> Step<Y, D> {
     ///
     /// let x: Step<i32, &str> = Step::Complete("complete");
     /// assert_eq!(x.unwrap_complete(), "complete");
-    /// ```
-    ///
-    /// ```should_panic
-    /// use sans::Step;
-    ///
-    /// let x: Step<i32, &str> = Step::Yielded(42);
-    /// x.unwrap_complete(); // panics
     /// ```
     #[inline]
     pub fn unwrap_complete(self) -> D {

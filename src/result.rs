@@ -1,63 +1,34 @@
-//! Result combinators for error handling in coroutines.
+//! Handle errors in coroutine pipelines.
 //!
-//! This module provides adapters and extension traits for working with [`Result`] types
-//! in coroutine pipelines, enabling composable error handling patterns.
+//! | To… | Use |
+//! | --- | --- |
+//! | Stop on a yielded `Err` | [`short_circuit`] |
+//! | Create an infallible coroutine after an `Ok` result | [`ok_then`] |
+//! | Create a fallible coroutine after an `Ok` result | [`ok_and_then`] |
+//! | Pass an `Ok` result to another coroutine | [`ok_chain`] |
+//! | Flatten a nested final `Result` | [`flatten`] |
 //!
-//! # Core Combinators
-//!
-//! - [`short_circuit`] - Short-circuits on the first `Err` in yielded values
-//! - [`ok_map`] - Maps `Ok` return values through a function that produces an [`InitSans`]
-//! - [`ok_and_then`] - Chains through a function that produces a fallible [`InitSans`]
-//! - [`ok_chain`] - Chains to another coroutine only if the first returns `Ok`
-//! - [`flatten`] - Flattens nested `Result<Result<T, E>, E>` types
-//!
-//! # Extension Traits
-//!
-//! The [`TrySans`] and [`TryInitSans`] traits provide method syntax for these combinators,
-//! enabling fluent error handling chains.
-//!
-//! # Examples
-//!
-//! ```
-//! use sans::prelude::*;
-//! use sans::result::{short_circuit, TrySans};
-//!
-//! // Short-circuit on errors
-//! let coro = repeat(|x: i32| {
-//!     if x < 0 { Err("negative") } else { Ok(x * 2) }
-//! });
-//! let mut sc = short_circuit(coro);
-//!
-//! assert_eq!(sc.next(5).unwrap_yielded(), 10);
-//! assert_eq!(sc.next(-1).unwrap_complete(), Err("negative"));
-//! ```
+//! Import [`TrySans`] or [`TryInitSans`] to use the final-result operations as methods.
+use crate::compose::sequence::Sequence;
 use crate::{InitSans, Sans, step::Step};
 
-/// Short-circuits on the first `Err` in a yielded `Result`.
-///
-/// Converts `Sans<I, Result<O, E>, Return = P>` to `Sans<I, O, Return = Result<P, E>>`.
-/// If any yield is `Err(e)`, immediately completes with `Err(e)`.
-/// Otherwise yields unwrapped `Ok` values and completes with `Ok(P)`.
+/// Stop on a yielded `Err`. See [`short_circuit`].
 pub struct ShortCircuit<S, E> {
     coro: S,
     _phantom: std::marker::PhantomData<E>,
 }
 
-/// Create a coroutine that short-circuits on the first yielded `Err`.
+/// Yield unwrapped `Ok` outputs and complete on the first yielded `Err`.
 ///
-/// # Examples
+/// Normal completion wraps the final result in `Ok`.
 ///
 /// ```
 /// use sans::prelude::*;
 /// use sans::result::short_circuit;
 ///
-/// let coro = repeat(|x: i32| {
-///     if x < 0 { Err("negative") } else { Ok(x * 2) }
-/// });
-/// let mut sc = short_circuit(coro);
-///
-/// assert_eq!(sc.next(5).unwrap_yielded(), 10);
-/// assert_eq!(sc.next(-1).unwrap_complete(), Err("negative"));
+/// let mut coro = short_circuit(repeat(|text: &str| text.parse::<i32>()));
+/// assert_eq!(coro.next("5").unwrap_yielded(), 5);
+/// assert!(coro.next("invalid").unwrap_complete().is_err());
 /// ```
 pub fn short_circuit<S, E>(coro: S) -> ShortCircuit<S, E> {
     ShortCircuit {
@@ -66,9 +37,7 @@ pub fn short_circuit<S, E>(coro: S) -> ShortCircuit<S, E> {
     }
 }
 
-/// Create a ShortCircuit from an InitSans coroutine.
-///
-/// This is used when applying short-circuit to a coroutine that yields immediately.
+/// The [`short_circuit`] constructor for an [`InitSans`].
 pub fn init_short_circuit<I, O, E, S>(coro: S) -> ShortCircuit<S, E>
 where
     S: InitSans<I, Result<O, E>>,
@@ -115,51 +84,29 @@ where
     }
 }
 
-/// Maps `Ok` values through a function that produces an `InitSans`.
-///
-/// If the coroutine completes with `Err`, propagates the error.
-/// If it completes with `Ok(p)`, calls `f(p)` and wraps the result in `Ok`.
+/// Run an infallible coroutine after an `Ok` result. See [`ok_then`].
 pub struct OkMap<S, T, F> {
-    state: OkMapState<S, T, F>,
+    state: Sequence<S, T, F>,
 }
 
-enum OkMapState<S, T, F> {
-    OnFirst(S, Option<F>),
-    OnSecond(T),
-}
-
-/// Create a coroutine that maps `Ok` return values through a function.
+/// Use an `Ok` final result to create the next coroutine, then wrap its result in `Ok`.
 ///
-/// # Examples
+/// An `Err` stops the chain. Use [`ok_and_then`] if the next coroutine can fail.
 ///
 /// ```
 /// use sans::prelude::*;
-/// use sans::result::ok_map;
-/// use sans::build::from_fn;
-/// use sans::Step;
+/// use sans::result::TrySans;
 ///
-/// let mut called = false;
-/// let coro = from_fn(move |x: i32| -> Step<i32, Result<i32, String>> {
-///     if !called {
-///         called = true;
-///         Step::Yielded(x * 2)
-///     } else if x > 0 {
-///         Step::Complete(Ok(x))
-///     } else {
-///         Step::Complete(Err("non-positive".to_string()))
-///     }
-/// });
+/// let mut coro = once(|x: i32| x * 2)
+///     .map_return(Ok::<_, &str>)
+///     .ok_then(|value| init(value, once(move |x| x + value)));
 ///
-/// let mut mapped = ok_map(coro, |val| init(val, repeat(move |x: i32| x + val)));
-///
-/// // First input: 5 -> yields 10
-/// assert_eq!(mapped.next(5).unwrap_yielded(), 10);
-/// // Second input: completes with Ok(3), starts second coro with val=3
-/// assert_eq!(mapped.next(3).unwrap_yielded(), 3);
-/// // Third input: second coro continues 7 + 3 = 10
-/// assert_eq!(mapped.next(7).unwrap_yielded(), 10);
+/// assert_eq!(coro.next(5).unwrap_yielded(), 10);
+/// assert_eq!(coro.next(3).unwrap_yielded(), 3);
+/// assert_eq!(coro.next(7).unwrap_yielded(), 10);
+/// assert_eq!(coro.next(9).unwrap_complete(), Ok(9));
 /// ```
-pub fn ok_map<I, O, P, E, S, T, F>(coro: S, f: F) -> OkMap<S, T::Next, F>
+pub fn ok_then<I, O, P, E, S, T, F>(coro: S, f: F) -> OkMap<S, T::Next, F>
 where
     S: Sans<I, O, Return = Result<P, E>>,
     T: InitSans<I, O>,
@@ -167,14 +114,12 @@ where
     F: FnOnce(P) -> T,
 {
     OkMap {
-        state: OkMapState::OnFirst(coro, Some(f)),
+        state: Sequence::OnFirst(coro, Some(f)),
     }
 }
 
-/// Create an OkMap from an InitSans coroutine.
-///
-/// This is used when applying ok_map to a coroutine that yields immediately.
-pub fn init_ok_map<I, O, P, E, S, T, F>(coro: S, f: F) -> OkMap<S, T::Next, F>
+/// The [`ok_then`] constructor for an [`InitSans`].
+pub fn init_ok_then<I, O, P, E, S, T, F>(coro: S, f: F) -> OkMap<S, T::Next, F>
 where
     S: InitSans<I, O>,
     S::Next: Sans<I, O, Return = Result<P, E>>,
@@ -183,7 +128,7 @@ where
     F: FnOnce(P) -> T,
 {
     OkMap {
-        state: OkMapState::OnFirst(coro, Some(f)),
+        state: Sequence::OnFirst(coro, Some(f)),
     }
 }
 
@@ -197,26 +142,14 @@ where
     type Return = Result<<T::Next as Sans<I, O>>::Return, E>;
 
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
-        match &mut self.state {
-            OkMapState::OnSecond(next) => next.next(input).map_complete(Ok),
-            OkMapState::OnFirst(coro, f) => match coro.next(input) {
-                Step::Yielded(o) => Step::Yielded(o),
-                Step::Complete(Err(e)) => Step::Complete(Err(e)),
-                Step::Complete(Ok(p)) => {
-                    let f = f.take().expect("ok_map can only be used once");
-                    let init_sans = f(p);
-                    match init_sans.init() {
-                        Step::Yielded((o, next)) => {
-                            *self = OkMap {
-                                state: OkMapState::OnSecond(next),
-                            };
-                            Step::Yielded(o)
-                        }
-                        Step::Complete(ret) => Step::Complete(Ok(ret)),
-                    }
-                }
+        self.state.next(
+            input,
+            |f, value| match value {
+                Ok(value) => f(value).init().map_complete(Ok),
+                Err(error) => Step::Complete(Err(error)),
             },
-        }
+            Ok,
+        )
     }
 }
 
@@ -231,88 +164,38 @@ where
     type Next = OkMap<S::Next, T::Next, F>;
 
     fn init(self) -> Step<(O, Self::Next), Result<<T::Next as Sans<I, O>>::Return, E>> {
-        let OkMapState::OnFirst(coro, f) = self.state else {
-            unreachable!("OkMap::init called on OnSecond state")
-        };
-
-        match coro.init() {
-            Step::Yielded((o, next)) => Step::Yielded((
-                o,
-                OkMap {
-                    state: OkMapState::OnFirst(next, f),
-                },
-            )),
-            Step::Complete(Err(e)) => Step::Complete(Err(e)),
-            Step::Complete(Ok(p)) => {
-                let f = f.expect("f should be available");
-                let init_sans = f(p);
-                match init_sans.init() {
-                    Step::Yielded((o, next)) => Step::Yielded((
-                        o,
-                        OkMap {
-                            state: OkMapState::OnSecond(next),
-                        },
-                    )),
-                    Step::Complete(ret) => Step::Complete(Ok(ret)),
-                }
-            }
-        }
+        self.state
+            .init(|f, value| match value {
+                Ok(value) => f(value).init().map_complete(Ok),
+                Err(error) => Step::Complete(Err(error)),
+            })
+            .map_yielded(|(output, state)| (output, OkMap { state }))
     }
 }
 
-/// Chains through a function that produces an `InitSans` with a `Result` return type.
-///
-/// If the coroutine completes with `Err`, propagates the error without calling `f`.
-/// If it completes with `Ok(p)`, calls `f(p)` which itself can return `Result`.
+/// Run a fallible coroutine after an `Ok` result. See [`ok_and_then`].
 pub struct OkAndThen<S, T, F> {
-    state: OkAndThenState<S, T, F>,
+    state: Sequence<S, T, F>,
 }
 
-enum OkAndThenState<S, T, F> {
-    OnFirst(S, Option<F>),
-    OnSecond(T),
-}
-
-/// Create a coroutine that chains `Ok` values through a fallible function.
+/// Use an `Ok` final result to create the next fallible coroutine.
 ///
-/// # Examples
+/// An `Err` final result from either coroutine stops the chain.
 ///
 /// ```
 /// use sans::prelude::*;
-/// use sans::result::ok_and_then;
-/// use sans::build::from_fn;
-/// use sans::Step;
+/// use sans::result::TrySans;
 ///
-/// let mut first_called = false;
-/// let coro = from_fn(move |x: i32| -> Step<Result<i32, String>, Result<i32, String>> {
-///     if !first_called {
-///         first_called = true;
-///         Step::Yielded(Ok(x * 2))
-///     } else if x > 0 {
-///         Step::Complete(Ok(x))
-///     } else {
-///         Step::Complete(Err("non-positive".to_string()))
-///     }
-/// });
+/// let mut coro = once(|x: i32| x * 2)
+///     .map_return(Ok::<_, &str>)
+///     .ok_and_then(|value| init(value, once(|x| x).map_return(|x| {
+///         if x > 0 { Ok(x) } else { Err("non-positive") }
+///     })));
 ///
-/// let mut chained = ok_and_then(coro, move |val| {
-///     let mut second_called = false;
-///     init(Ok(val), from_fn(move |x: i32| -> Step<Result<i32, String>, Result<i32, String>> {
-///         if !second_called {
-///             second_called = true;
-///             if x > 100 { Step::Yielded(Err("too large".to_string())) } else { Step::Yielded(Ok(x + val)) }
-///         } else {
-///             Step::Complete(Ok(x))
-///         }
-///     }))
-/// });
-///
-/// // First input: 5 -> yields Ok(10)
-/// assert_eq!(chained.next(5).unwrap_yielded(), Ok(10));
-/// // Second input: completes with Ok(3), starts second coro with val=3, yields Ok(3)
-/// assert_eq!(chained.next(3).unwrap_yielded(), Ok(3));
-/// // Third input: 7 -> yields Ok(7+3) = Ok(10)
-/// assert_eq!(chained.next(7).unwrap_yielded(), Ok(10));
+/// assert_eq!(coro.next(5).unwrap_yielded(), 10);
+/// assert_eq!(coro.next(3).unwrap_yielded(), 3);
+/// assert_eq!(coro.next(7).unwrap_yielded(), 7);
+/// assert_eq!(coro.next(0).unwrap_complete(), Err("non-positive"));
 /// ```
 pub fn ok_and_then<I, O, P, Q, E, S, T, F>(coro: S, f: F) -> OkAndThen<S, T::Next, F>
 where
@@ -322,13 +205,11 @@ where
     F: FnOnce(P) -> T,
 {
     OkAndThen {
-        state: OkAndThenState::OnFirst(coro, Some(f)),
+        state: Sequence::OnFirst(coro, Some(f)),
     }
 }
 
-/// Create an OkAndThen from an InitSans coroutine.
-///
-/// This is used when applying ok_and_then to a coroutine that yields immediately.
+/// The [`ok_and_then`] constructor for an [`InitSans`].
 pub fn init_ok_and_then<I, O, P, Q, E, S, T, F>(coro: S, f: F) -> OkAndThen<S, T::Next, F>
 where
     S: InitSans<I, O>,
@@ -338,7 +219,7 @@ where
     F: FnOnce(P) -> T,
 {
     OkAndThen {
-        state: OkAndThenState::OnFirst(coro, Some(f)),
+        state: Sequence::OnFirst(coro, Some(f)),
     }
 }
 
@@ -352,26 +233,14 @@ where
     type Return = Result<Q, E>;
 
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
-        match &mut self.state {
-            OkAndThenState::OnSecond(next) => next.next(input),
-            OkAndThenState::OnFirst(coro, f) => match coro.next(input) {
-                Step::Yielded(o) => Step::Yielded(o),
-                Step::Complete(Err(e)) => Step::Complete(Err(e)),
-                Step::Complete(Ok(p)) => {
-                    let f = f.take().expect("ok_and_then can only be used once");
-                    let init_sans = f(p);
-                    match init_sans.init() {
-                        Step::Yielded((o, next)) => {
-                            *self = OkAndThen {
-                                state: OkAndThenState::OnSecond(next),
-                            };
-                            Step::Yielded(o)
-                        }
-                        Step::Complete(ret) => Step::Complete(ret),
-                    }
-                }
+        self.state.next(
+            input,
+            |f, value| match value {
+                Ok(value) => f(value).init().map_complete(|value| value),
+                Err(error) => Step::Complete(Err(error)),
             },
-        }
+            |value| value,
+        )
     }
 }
 
@@ -386,74 +255,36 @@ where
     type Next = OkAndThen<S::Next, T::Next, F>;
 
     fn init(self) -> Step<(O, Self::Next), Result<Q, E>> {
-        let OkAndThenState::OnFirst(coro, f) = self.state else {
-            unreachable!("OkAndThen::init called on OnSecond state")
-        };
-
-        match coro.init() {
-            Step::Yielded((o, next)) => Step::Yielded((
-                o,
-                OkAndThen {
-                    state: OkAndThenState::OnFirst(next, f),
-                },
-            )),
-            Step::Complete(Err(e)) => Step::Complete(Err(e)),
-            Step::Complete(Ok(p)) => {
-                let f = f.expect("f should be available");
-                let init_sans = f(p);
-                match init_sans.init() {
-                    Step::Yielded((o, next)) => Step::Yielded((
-                        o,
-                        OkAndThen {
-                            state: OkAndThenState::OnSecond(next),
-                        },
-                    )),
-                    Step::Complete(ret) => Step::Complete(ret),
-                }
-            }
-        }
+        self.state
+            .init(|f, value| match value {
+                Ok(value) => f(value).init().map_complete(|value| value),
+                Err(error) => Step::Complete(Err(error)),
+            })
+            .map_yielded(|(output, state)| (output, OkAndThen { state }))
     }
 }
 
-/// Chains to another coroutine only if the first returns `Ok`.
-///
-/// Converts the Ok value to the input type for the next coroutine.
+/// Pass an `Ok` result to the next coroutine. See [`ok_chain`].
 pub struct OkChain<S, R> {
     coro: Option<S>,
     next: R,
 }
 
-/// Create a coroutine that chains to another coroutine on `Ok`.
+/// Pass an `Ok` final result to the next coroutine as its first input.
 ///
-/// # Examples
+/// An `Err` stops the chain. The second coroutine's final result is wrapped in `Ok`.
 ///
 /// ```
 /// use sans::prelude::*;
-/// use sans::result::ok_chain;
-/// use sans::build::from_fn;
-/// use sans::Step;
+/// use sans::result::TrySans;
 ///
-/// let mut called = false;
-/// let first = from_fn(move |x: i32| -> Step<i32, Result<i32, String>> {
-///     if !called {
-///         called = true;
-///         Step::Yielded(x * 2)
-///     } else if x > 0 {
-///         Step::Complete(Ok(x))
-///     } else {
-///         Step::Complete(Err("non-positive".to_string()))
-///     }
-/// });
-/// let second = repeat(|x: i32| x + 1);
+/// let mut coro = once(|x: i32| x * 2)
+///     .map_return(Ok::<_, &str>)
+///     .ok_chain(once(|x| x + 1));
 ///
-/// let mut chained = ok_chain(first, second);
-///
-/// // First input: 5 -> yields 10
-/// assert_eq!(chained.next(5).unwrap_yielded(), 10);
-/// // Second input: completes with Ok(3), chains with 3
-/// assert_eq!(chained.next(3).unwrap_yielded(), 4);
-/// // Now in second coro
-/// assert_eq!(chained.next(10).unwrap_yielded(), 11);
+/// assert_eq!(coro.next(5).unwrap_yielded(), 10);
+/// assert_eq!(coro.next(3).unwrap_yielded(), 4);
+/// assert_eq!(coro.next(9).unwrap_complete(), Ok(9));
 /// ```
 pub fn ok_chain<I, O, E, S, R>(coro: S, next: R) -> OkChain<S, R>
 where
@@ -466,9 +297,7 @@ where
     }
 }
 
-/// Create an OkChain from an InitSans coroutine.
-///
-/// This is used when applying ok_chain to a coroutine that yields immediately.
+/// The [`ok_chain`] constructor for an [`InitSans`].
 pub fn init_ok_chain<I, O, E, S, R>(coro: S, next: R) -> OkChain<S, R>
 where
     S: InitSans<I, O>,
@@ -540,50 +369,31 @@ where
     }
 }
 
-/// Flattens nested `Result` types in the return value.
-///
-/// Converts `Result<Result<T, E>, E>` to `Result<T, E>`.
+/// Flatten a nested final `Result`. See [`flatten`].
 pub struct Flatten<S> {
     coro: S,
 }
 
-/// Create a coroutine that flattens nested `Result` types.
+/// Flatten the final `Result<Result<T, E>, E>` into `Result<T, E>`.
 ///
-/// # Examples
+/// Yielded outputs stay unchanged.
 ///
 /// ```
 /// use sans::prelude::*;
-/// use sans::result::flatten;
-/// use sans::build::from_fn;
-/// use sans::Step;
+/// use sans::result::TrySans;
 ///
-/// let mut called = false;
-/// let coro = from_fn(move |x: i32| -> Step<Result<Result<i32, String>, String>, Result<Result<i32, String>, String>> {
-///     if !called {
-///         called = true;
-///         if x > 0 {
-///             if x < 100 { Step::Yielded(Ok(Ok(x * 2))) } else { Step::Yielded(Ok(Err("too large".to_string()))) }
-///         } else {
-///             Step::Yielded(Err("non-positive".to_string()))
-///         }
-///     } else {
-///         Step::Complete(Ok(Ok(x)))
-///     }
-/// });
+/// let mut coro = once(|x: i32| x * 2)
+///     .map_return(|x| Ok::<_, &str>(Ok(x)))
+///     .flatten();
 ///
-/// let mut flattened = flatten(coro);
-///
-/// assert_eq!(flattened.next(5).unwrap_yielded(), Ok(Ok(10)));
-/// // Second call completes with flattened result
-/// assert_eq!(flattened.next(10).unwrap_complete(), Ok(10));
+/// assert_eq!(coro.next(5).unwrap_yielded(), 10);
+/// assert_eq!(coro.next(3).unwrap_complete(), Ok(3));
 /// ```
 pub fn flatten<S>(coro: S) -> Flatten<S> {
     Flatten { coro }
 }
 
-/// Create a Flatten from an InitSans coroutine.
-///
-/// This is used when applying flatten to a coroutine that yields immediately.
+/// The [`flatten`] constructor for an [`InitSans`].
 pub fn init_flatten<I, O, T, E, S>(coro: S) -> Flatten<S>
 where
     S: InitSans<I, O>,
@@ -625,22 +435,20 @@ where
     }
 }
 
-/// Extension trait for `Sans` that provides result combinator methods.
-///
-/// This trait is automatically implemented for all types that implement `Sans`.
+/// Final-result methods for [`Sans`]. Import this trait to use them.
 pub trait TrySans<I, O>: Sized {
-    /// Maps `Ok` return values through a function that produces an `InitSans`.
-    fn ok_map<P, E, T, F>(self, f: F) -> OkMap<Self, T::Next, F>
+    /// Create the next coroutine from an `Ok` result. See [`ok_then`].
+    fn ok_then<P, E, T, F>(self, f: F) -> OkMap<Self, T::Next, F>
     where
         Self: Sans<I, O, Return = Result<P, E>>,
         T: InitSans<I, O>,
         T::Next: Sans<I, O>,
         F: FnOnce(P) -> T,
     {
-        ok_map(self, f)
+        ok_then(self, f)
     }
 
-    /// Chains through a function that produces an `InitSans` with a `Result` return type.
+    /// Create the next fallible coroutine from an `Ok` result. See [`ok_and_then`].
     fn ok_and_then<P, Q, E, T, F>(self, f: F) -> OkAndThen<Self, T::Next, F>
     where
         Self: Sans<I, O, Return = Result<P, E>>,
@@ -651,7 +459,7 @@ pub trait TrySans<I, O>: Sized {
         ok_and_then(self, f)
     }
 
-    /// Chains to another coroutine only if the first returns `Ok`.
+    /// Pass an `Ok` result to the next coroutine. See [`ok_chain`].
     fn ok_chain<E, R>(self, next: R) -> OkChain<Self, R>
     where
         Self: Sans<I, O, Return = Result<I, E>>,
@@ -660,7 +468,7 @@ pub trait TrySans<I, O>: Sized {
         ok_chain(self, next)
     }
 
-    /// Flattens nested `Result` types in the return value.
+    /// Flatten a nested final `Result`. See [`flatten`].
     fn flatten<T, E>(self) -> Flatten<Self>
     where
         Self: Sans<I, O, Return = Result<Result<T, E>, E>>,
@@ -671,12 +479,10 @@ pub trait TrySans<I, O>: Sized {
 
 impl<I, O, S> TrySans<I, O> for S where S: Sans<I, O> {}
 
-/// Extension trait for `InitSans` that provides result combinator methods.
-///
-/// This trait is automatically implemented for all types that implement `InitSans`.
+/// Final-result methods for [`InitSans`]. Import this trait to use them.
 pub trait TryInitSans<I, O>: InitSans<I, O> + Sized {
-    /// Maps `Ok` return values through a function that produces an `InitSans`.
-    fn ok_map<P, E, T, F>(self, f: F) -> OkMap<Self, T::Next, F>
+    /// Create the next coroutine from an `Ok` result. See [`ok_then`].
+    fn ok_then<P, E, T, F>(self, f: F) -> OkMap<Self, T::Next, F>
     where
         Self: InitSans<I, O>,
         Self::Next: Sans<I, O, Return = Result<P, E>>,
@@ -684,10 +490,10 @@ pub trait TryInitSans<I, O>: InitSans<I, O> + Sized {
         T::Next: Sans<I, O>,
         F: FnOnce(P) -> T,
     {
-        init_ok_map(self, f)
+        init_ok_then(self, f)
     }
 
-    /// Chains through a function that produces an `InitSans` with a `Result` return type.
+    /// Create the next fallible coroutine from an `Ok` result. See [`ok_and_then`].
     fn ok_and_then<P, Q, E, T, F>(self, f: F) -> OkAndThen<Self, T::Next, F>
     where
         Self: InitSans<I, O>,
@@ -699,7 +505,7 @@ pub trait TryInitSans<I, O>: InitSans<I, O> + Sized {
         init_ok_and_then(self, f)
     }
 
-    /// Chains to another coroutine only if the first returns `Ok`.
+    /// Pass an `Ok` result to the next coroutine. See [`ok_chain`].
     fn ok_chain<E, R>(self, next: R) -> OkChain<Self, R>
     where
         Self: InitSans<I, O>,
@@ -709,7 +515,7 @@ pub trait TryInitSans<I, O>: InitSans<I, O> + Sized {
         init_ok_chain(self, next)
     }
 
-    /// Flattens nested `Result` types in the return value.
+    /// Flatten a nested final `Result`. See [`flatten`].
     fn flatten<T, E>(self) -> Flatten<Self>
     where
         Self: InitSans<I, O>,
@@ -724,8 +530,216 @@ impl<I, O, S> TryInitSans<I, O> for S where S: InitSans<I, O> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Sans;
     use crate::build::init;
     use crate::build::{once, repeat};
+
+    // A fully typed immediate initializer exercises paths that tuple seeds cannot.
+    struct Immediate<D>(D);
+
+    impl<D> InitSans<i32, i32> for Immediate<D> {
+        type Next = crate::build::FromFn<fn(i32) -> Step<i32, D>>;
+
+        fn init(self) -> Step<(i32, Self::Next), D> {
+            Step::Complete(self.0)
+        }
+    }
+
+    #[test]
+    fn first_error_skips_factory_in_both_phases() {
+        use crate::build::from_fn;
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let factory = |_| {
+            calls.set(calls.get() + 1);
+            Immediate(42)
+        };
+        let mut continuation = ok_then(
+            from_fn(|_: i32| Step::<i32, Result<i32, &str>>::Complete(Err("first"))),
+            factory,
+        );
+        assert_eq!(continuation.next(0), Step::Complete(Err("first")));
+        assert_eq!(calls.get(), 0);
+        let initializer = init_ok_then(Immediate(Err::<i32, _>("initial")), factory);
+        assert_eq!(initializer.init().unwrap_complete(), Err("initial"));
+        assert_eq!(calls.get(), 0);
+
+        let fallible_factory = |_| {
+            calls.set(calls.get() + 1);
+            Immediate(Ok::<_, &str>(42))
+        };
+        let mut continuation = ok_and_then(
+            from_fn(|_: i32| Step::<i32, Result<i32, &str>>::Complete(Err("first"))),
+            fallible_factory,
+        );
+        assert_eq!(continuation.next(0), Step::Complete(Err("first")));
+        let initializer = init_ok_and_then(Immediate(Err::<i32, _>("initial")), fallible_factory);
+        assert_eq!(initializer.init().unwrap_complete(), Err("initial"));
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn second_initializer_immediate_completion_converts_only_infallible_return() {
+        use crate::build::from_fn;
+        let mut infallible = ok_then(
+            from_fn(|x: i32| Step::<i32, Result<i32, &str>>::Complete(Ok(x))),
+            |value| Immediate(value + 1),
+        );
+        assert_eq!(infallible.next(3), Step::Complete(Ok(4)));
+        let mut fallible = ok_and_then(
+            from_fn(|x: i32| Step::<i32, Result<i32, &str>>::Complete(Ok(x))),
+            |_| Immediate(Err::<i32, _>("second")),
+        );
+        assert_eq!(fallible.next(3), Step::Complete(Err("second")));
+        assert_eq!(
+            init_ok_then(Immediate(Ok::<_, &str>(3)), |value| Immediate(value + 1))
+                .init()
+                .unwrap_complete(),
+            Ok(4),
+        );
+        assert_eq!(
+            init_ok_and_then(Immediate(Ok::<_, &str>(3)), |_| Immediate(Err::<i32, _>(
+                "second"
+            )))
+            .init()
+            .unwrap_complete(),
+            Err("second"),
+        );
+    }
+
+    #[test]
+    fn initially_complete_first_installs_second_continuation() {
+        use crate::build::from_fn;
+        let initializer = init_ok_then(Immediate(Ok::<_, &str>(3)), |value| {
+            init(value, once(move |x: i32| x + value))
+        });
+        let (initial, mut next) = initializer.init().unwrap_yielded();
+        assert_eq!(initial, 3);
+        assert_eq!(next.next(5), Step::Yielded(8));
+        assert_eq!(next.next(9), Step::Complete(Ok(9)));
+
+        let initializer = init_ok_and_then(Immediate(Ok::<_, &str>(3)), |value| {
+            init(
+                value,
+                from_fn(|_: i32| Step::<i32, Result<i32, &str>>::Complete(Err("second"))),
+            )
+        });
+        let (initial, mut next) = initializer.init().unwrap_yielded();
+        assert_eq!(initial, 3);
+        assert_eq!(next.next(5), Step::Complete(Err("second")));
+    }
+
+    #[test]
+    fn factory_is_consumed_once_and_all_yields_keep_order() {
+        use crate::build::from_fn;
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let owned = String::from("done");
+        let first = once(|x: i32| x).map_return(Ok::<_, &str>);
+        let mut next = ok_then(first, |value| {
+            calls.set(calls.get() + 1);
+            // Moving this String out requires FnOnce rather than FnMut.
+            let owned = owned;
+            let mut remaining = 2;
+            init(
+                value * 10,
+                from_fn(move |x: i32| {
+                    remaining -= 1;
+                    if remaining > 0 {
+                        Step::Yielded(x + value)
+                    } else {
+                        Step::Complete(owned.len())
+                    }
+                }),
+            )
+        });
+        assert_eq!(next.next(1), Step::Yielded(1));
+        assert_eq!(next.next(2), Step::Yielded(20));
+        assert_eq!(next.next(3), Step::Yielded(5));
+        assert_eq!(next.next(4), Step::Complete(Ok(4)));
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn plain_sequence_accepts_arbitrary_return_and_immediate_second() {
+        use crate::build::from_fn;
+        let mut next = crate::compose::and_then(
+            from_fn(|_: i32| Step::<i32, String>::Complete(String::from("done"))),
+            |value| Immediate(value.len()),
+        );
+        assert_eq!(next.next(0), Step::Complete(4));
+    }
+
+    #[test]
+    fn named_adapters_support_exact_storage_types() {
+        use crate::build::{FromFn, from_fn};
+        type Plain = FromFn<fn(i32) -> Step<i32, i32>>;
+        type Fallible = FromFn<fn(i32) -> Step<i32, Result<i32, &'static str>>>;
+        type PlainFactory = fn(i32) -> (i32, Plain);
+        type FallibleFactory = fn(i32) -> (i32, Fallible);
+        fn plain(x: i32) -> Step<i32, i32> {
+            Step::Complete(x)
+        }
+        fn fallible(x: i32) -> Step<i32, Result<i32, &'static str>> {
+            Step::Complete(Ok(x))
+        }
+        fn plain_factory(x: i32) -> (i32, Plain) {
+            init(x, from_fn(plain as fn(_) -> _))
+        }
+        fn fallible_factory(x: i32) -> (i32, Fallible) {
+            init(x, from_fn(fallible as fn(_) -> _))
+        }
+        let mut plain_sequence: crate::compose::AndThen<Plain, Plain, PlainFactory> =
+            crate::compose::and_then(from_fn(plain as fn(_) -> _), plain_factory as PlainFactory);
+        let mut infallible_sequence: OkMap<Fallible, Plain, PlainFactory> = ok_then(
+            from_fn(fallible as fn(_) -> _),
+            plain_factory as PlainFactory,
+        );
+        let mut fallible_sequence: OkAndThen<Fallible, Fallible, FallibleFactory> = ok_and_then(
+            from_fn(fallible as fn(_) -> _),
+            fallible_factory as FallibleFactory,
+        );
+        assert_eq!(plain_sequence.next(3), Step::Yielded(3));
+        assert_eq!(infallible_sequence.next(3), Step::Yielded(3));
+        assert_eq!(fallible_sequence.next(3), Step::Yielded(3));
+        assert_eq!(plain_sequence.next(4), Step::Complete(4));
+        assert_eq!(infallible_sequence.next(4), Step::Complete(Ok(4)));
+        assert_eq!(fallible_sequence.next(4), Step::Complete(Ok(4)));
+    }
+
+    #[test]
+    fn named_adapters_preserve_borrowed_captures_and_send() {
+        use crate::build::from_fn;
+        fn assert_send<T: Send>(_: &T) {}
+        let offset = 5;
+        let borrowed = &offset;
+        let first = from_fn(|x: i32| Step::<i32, Result<i32, &str>>::Complete(Ok(x)));
+        let mut infallible: OkMap<_, _, _> = ok_then(first, move |value| {
+            init(value + borrowed, once(move |x: i32| x + borrowed))
+        });
+        assert_send(&infallible);
+        assert_eq!(infallible.next(3), Step::Yielded(8));
+        assert_eq!(infallible.next(4), Step::Yielded(9));
+        assert_eq!(infallible.next(2), Step::Complete(Ok(2)));
+        let first = from_fn(|x: i32| Step::<i32, Result<i32, &str>>::Complete(Ok(x)));
+        let mut fallible: OkAndThen<_, _, _> = ok_and_then(first, move |value| {
+            init(
+                value + borrowed,
+                from_fn(move |x: i32| Step::<i32, Result<i32, &str>>::Complete(Ok(x + borrowed))),
+            )
+        });
+        assert_send(&fallible);
+        assert_eq!(fallible.next(3), Step::Yielded(8));
+        assert_eq!(fallible.next(4), Step::Complete(Ok(9)));
+        let mut plain: crate::compose::AndThen<_, _, _> = crate::compose::and_then(
+            from_fn(|x: i32| Step::<i32, i32>::Complete(x)),
+            move |value| init(value + borrowed, once(move |x: i32| x + borrowed)),
+        );
+        assert_send(&plain);
+        assert_eq!(plain.next(3), Step::Yielded(8));
+        assert_eq!(plain.next(4), Step::Yielded(9));
+        assert_eq!(plain.next(2), Step::Complete(2));
+    }
 
     #[test]
     fn test_short_circuit_propagates_ok_yields() {
@@ -756,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ok_map_propagates_err() {
+    fn test_ok_then_propagates_err() {
         use crate::build::from_fn;
         let mut called = false;
         let coro = from_fn(move |x: i32| {
@@ -770,7 +784,7 @@ mod tests {
             }
         });
 
-        let mut mapped = ok_map(coro, |val| init(val, repeat(move |x: i32| x + val)));
+        let mut mapped = ok_then(coro, |val| init(val, repeat(move |x: i32| x + val)));
 
         assert_eq!(mapped.next(5).unwrap_yielded(), 10);
         assert_eq!(
@@ -780,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ok_map_chains_on_ok() {
+    fn test_ok_then_chains_on_ok() {
         use crate::build::from_fn;
         let mut called = false;
         let coro = from_fn(move |x: i32| -> Step<i32, Result<i32, String>> {
@@ -792,7 +806,7 @@ mod tests {
             }
         });
 
-        let mut mapped = ok_map(coro, |val| init(val, repeat(move |x: i32| x + val)));
+        let mut mapped = ok_then(coro, |val| init(val, repeat(move |x: i32| x + val)));
 
         assert_eq!(mapped.next(5).unwrap_yielded(), 10);
         assert_eq!(mapped.next(3).unwrap_yielded(), 3); // initial value from init
@@ -1071,7 +1085,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ok_map_init_first_yields() {
+    fn test_ok_then_init_first_yields() {
         use crate::build::from_fn;
         let mut called = false;
         let first_coro = from_fn(move |x: i32| -> Step<i32, Result<i32, &str>> {
@@ -1084,7 +1098,7 @@ mod tests {
         });
         let init_first = (10, first_coro);
         let mapped = OkMap {
-            state: OkMapState::OnFirst(
+            state: Sequence::OnFirst(
                 init_first,
                 Some(|val| init(val, repeat(move |x: i32| x + val))),
             ),
@@ -1104,14 +1118,14 @@ mod tests {
     }
 
     #[test]
-    fn test_ok_map_init_first_completes_ok_second_yields() {
+    fn test_ok_then_init_first_completes_ok_second_yields() {
         use crate::build::from_fn;
         let first = (
             10,
             from_fn(|_: i32| Step::Complete::<i32, Result<i32, &str>>(Ok(20))),
         );
         let mapped = OkMap {
-            state: OkMapState::OnFirst(
+            state: Sequence::OnFirst(
                 first,
                 Some(|val| init(val * 2, repeat(move |x: i32| x + val))),
             ),
@@ -1128,14 +1142,14 @@ mod tests {
     }
 
     #[test]
-    fn test_ok_map_init_first_completes_err() {
+    fn test_ok_then_init_first_completes_err() {
         use crate::build::from_fn;
         let first = (
             10,
             from_fn(|_: i32| Step::Complete::<i32, Result<i32, &str>>(Err("error"))),
         );
         let mapped = OkMap {
-            state: OkMapState::OnFirst(first, Some(|val| init(val, repeat(move |x: i32| x + val)))),
+            state: Sequence::OnFirst(first, Some(|val| init(val, repeat(move |x: i32| x + val)))),
         };
 
         let (initial, mut coro) = mapped.init().unwrap_yielded();
@@ -1160,7 +1174,7 @@ mod tests {
         );
         let first = (Ok(10), first_coro);
         let chained = OkAndThen {
-            state: OkAndThenState::OnFirst(
+            state: Sequence::OnFirst(
                 first,
                 Some(|val| {
                     init(
@@ -1196,7 +1210,7 @@ mod tests {
             from_fn(|_: i32| Step::Complete::<Result<i32, &str>, Result<i32, &str>>(Ok(20))),
         );
         let chained = OkAndThen {
-            state: OkAndThenState::OnFirst(
+            state: Sequence::OnFirst(
                 first,
                 Some(|val| {
                     init(
@@ -1229,7 +1243,7 @@ mod tests {
             from_fn(|_: i32| Step::Complete::<Result<i32, &str>, Result<i32, &str>>(Err("error"))),
         );
         let chained = OkAndThen {
-            state: OkAndThenState::OnFirst(
+            state: Sequence::OnFirst(
                 first,
                 Some(|val| {
                     init(
@@ -1416,7 +1430,7 @@ mod tests {
     // Extension trait tests
 
     #[test]
-    fn test_try_sans_ok_map() {
+    fn test_try_sans_ok_then() {
         use crate::build::from_fn;
         use crate::result::TrySans;
 
@@ -1430,7 +1444,7 @@ mod tests {
             }
         });
 
-        let mut mapped = coro.ok_map(|val| init(val, repeat(move |x: i32| x + val)));
+        let mut mapped = coro.ok_then(|val| init(val, repeat(move |x: i32| x + val)));
 
         assert_eq!(mapped.next(5).unwrap_yielded(), 10);
         assert_eq!(mapped.next(3).unwrap_yielded(), 3);
@@ -1525,7 +1539,7 @@ mod tests {
     }
 
     #[test]
-    fn test_try_init_sans_ok_map() {
+    fn test_try_init_sans_ok_then() {
         use crate::build::from_fn;
         use crate::result::TryInitSans;
 
@@ -1539,7 +1553,7 @@ mod tests {
             }
         });
         let init_first = (10, first_coro);
-        let mapped = init_first.ok_map(|val| init(val, repeat(move |x: i32| x + val)));
+        let mapped = init_first.ok_then(|val| init(val, repeat(move |x: i32| x + val)));
 
         let (initial, mut coro) = mapped.init().unwrap_yielded();
         assert_eq!(initial, 10);

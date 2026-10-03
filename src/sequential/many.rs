@@ -1,15 +1,10 @@
-//! Running multiple coroutines sequentially.
-//!
-//! This module provides the [`Many`] combinator for executing an array of coroutines
-//! in sequence, passing each return value to the next coroutine.
+//! Run an array of coroutines in order.
 
 use crate::{Sans, Step};
 
-/// Run multiple coroutines sequentially, passing the return value of each to the next.
+/// Run an array of coroutines, passing each final result to the next as input.
 ///
-/// Each coroutine must have `Return = I` so the return value can become the input
-/// to the next coroutine. All coroutines must have the same type, which typically means
-/// using function pointers rather than closures.
+/// All coroutines must have the same type and return their input type.
 ///
 /// # Examples
 ///
@@ -25,11 +20,8 @@ use crate::{Sans, Step};
 ///     once(mul_two as fn(i32) -> i32),
 /// ]);
 ///
-/// // First coro: 5 + 10 = 15
 /// assert_eq!(coro.next(5).unwrap_yielded(), 15);
-/// // First completes with 7, second starts: 7 * 2 = 14
 /// assert_eq!(coro.next(7).unwrap_yielded(), 14);
-/// // Second completes with 20
 /// assert_eq!(coro.next(20).unwrap_complete(), 20);
 /// ```
 pub fn many<const N: usize, I, O, S>(rest: [S; N]) -> Many<N, S>
@@ -42,9 +34,10 @@ where
     }
 }
 
-/// Executes an array of coroutines sequentially, passing each return value to the next.
+/// An array of coroutines connected by [`many`].
 ///
-/// Created via [`many`]. Coroutines are executed in order until all complete.
+/// Each completed coroutine is dropped before the next begins. After all finish,
+/// `next` returns [`Step::Complete`] with the supplied input.
 pub struct Many<const N: usize, S> {
     states: [Option<S>; N],
     index: usize,
@@ -56,21 +49,19 @@ where
 {
     type Return = S::Return;
     fn next(&mut self, mut input: I) -> Step<O, Self::Return> {
-        loop {
-            match self.states.get_mut(self.index) {
-                Some(Some(s)) => match s.next(input) {
-                    Step::Yielded(o) => return Step::Yielded(o),
-                    Step::Complete(a) => {
-                        self.index += 1;
-                        input = a;
-                    }
-                },
-                Some(None) => {
+        while let Some(slot) = self.states.get_mut(self.index) {
+            let child = slot.as_mut().expect("the active coroutine is present");
+            match child.next(input) {
+                Step::Yielded(output) => return Step::Yielded(output),
+                Step::Complete(result) => {
+                    // Slots before index are empty; the active and later slots are present.
+                    *slot = None;
                     self.index += 1;
+                    input = result;
                 }
-                None => return Step::Complete(input),
             }
         }
+        Step::Complete(input)
     }
 }
 
@@ -78,6 +69,77 @@ where
 mod tests {
     use super::*;
     use crate::build::once;
+    use std::{cell::Cell, rc::Rc};
+
+    struct TrackedChild {
+        id: usize,
+        yielded: bool,
+        drops: Rc<Cell<usize>>,
+    }
+
+    impl Sans<i32, i32> for TrackedChild {
+        type Return = i32;
+
+        fn next(&mut self, input: i32) -> Step<i32, i32> {
+            // Every earlier child must be released before this child is called.
+            assert_eq!(self.drops.get(), self.id);
+            if self.yielded {
+                Step::Complete(input)
+            } else {
+                self.yielded = true;
+                Step::Yielded(input)
+            }
+        }
+    }
+
+    impl Drop for TrackedChild {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    #[test]
+    fn test_many_drops_completed_children_before_starting_next() {
+        let drops = Rc::new(Cell::new(0));
+        let mut coro = many(std::array::from_fn::<_, 2, _>(|id| TrackedChild {
+            id,
+            yielded: false,
+            drops: Rc::clone(&drops),
+        }));
+
+        assert_eq!(coro.next(5).unwrap_yielded(), 5);
+        assert_eq!(drops.get(), 0);
+        assert_eq!(coro.next(7).unwrap_yielded(), 7);
+        assert_eq!(drops.get(), 1);
+        assert_eq!(coro.next(9).unwrap_complete(), 9);
+        assert_eq!(drops.get(), 2);
+        drop(coro);
+        assert_eq!(drops.get(), 2);
+    }
+
+    #[test]
+    fn test_many_drops_immediate_children_in_one_call() {
+        let drops = Rc::new(Cell::new(0));
+        let mut coro = many(std::array::from_fn::<_, 3, _>(|id| TrackedChild {
+            id,
+            yielded: true,
+            drops: Rc::clone(&drops),
+        }));
+
+        assert_eq!(coro.next(42).unwrap_complete(), 42);
+        assert_eq!(drops.get(), 3);
+        assert_eq!(coro.next(99).unwrap_complete(), 99);
+        assert_eq!(drops.get(), 3);
+    }
+
+    #[test]
+    fn test_many_post_completion_returns_fresh_input() {
+        let mut coro = many([once(|input: i32| input + 1)]);
+        assert_eq!(coro.next(1).unwrap_yielded(), 2);
+        assert_eq!(coro.next(3).unwrap_complete(), 3);
+        assert_eq!(coro.next(4).unwrap_complete(), 4);
+        assert_eq!(coro.next(5).unwrap_complete(), 5);
+    }
 
     #[test]
     fn test_many_empty_array() {

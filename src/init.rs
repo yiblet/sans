@@ -1,60 +1,35 @@
-//! Coroutines with initial output.
-//!
-//! This module defines the [`InitSans`] trait for coroutines that can produce
-//! output immediately upon initialization, before receiving any input.
-//!
-//! # The InitSans Trait
-//!
-//! [`InitSans<I, O>`] represents a computation that:
-//! - Yields an initial output of type `O` before processing any input
-//! - Transitions to a [`Sans<I, O>`] coroutine for subsequent processing
-//! - Can complete immediately without yielding if the computation finishes during init
-//!
-//! # Examples
-//!
-//! ```rust
-//! use sans::prelude::*;
-//!
-//! // Create a continuation with an initial value
-//! let coro = init_once(42, |x: i32| x + 1);
-//! let (initial, mut cont) = coro.init().unwrap_yielded();
-//! assert_eq!(initial, 42);
-//! assert_eq!(cont.next(10).unwrap_yielded(), 11);
-//! ```
-
 use crate::{
     Sans, Step,
     build::{Once, Repeat, once, repeat},
     compose::{
-        Chain, MapInput, MapReturn, MapYield, init_chain, init_map_input, init_map_return,
-        init_map_yield,
+        Chain, MapInput, MapReturn, MapYield, WithState, init_chain, init_map_yield, map_input,
+        map_return,
     },
     iter::InitSansIter,
 };
 
-/// Computations that yield an initial value before processing input.
+/// Start a coroutine without caller input.
 ///
-/// Unlike `Sans`, `InitSans` coroutines can produce output immediately, making them ideal
-/// for pipeline initialization or generators with seed values.
+/// Initialization yields an output and a continuation, or completes immediately.
+/// The continuation is a [`Sans`] coroutine; resume it with [`Sans::next`].
 ///
 /// ```rust
 /// use sans::prelude::*;
 ///
 /// let coro = init_once(42, |x: i32| x + 1);
-/// let (initial, mut cont) = coro.init().unwrap_yielded();
+/// let (initial, mut next) = coro.init().unwrap_yielded();
 /// assert_eq!(initial, 42);
+/// assert_eq!(next.next(10).unwrap_yielded(), 11);
 /// ```
 pub trait InitSans<I, O> {
+    /// The coroutine to resume after the initial output.
     type Next: Sans<I, O>;
 
-    /// Execute the first coroutine.
-    ///
-    /// Returns `Yield((yield_value, continuation))` for normal execution,
-    /// or `Done(done_value)` if the computation completes immediately.
+    /// Yield the initial `(output, continuation)` pair, or complete immediately.
     #[allow(clippy::type_complexity)]
     fn init(self) -> Step<(O, Self::Next), <Self::Next as Sans<I, O>>::Return>;
 
-    /// Chain with a coroutine.
+    /// Pass the final result to the next coroutine as its first input.
     fn chain<R>(self, r: R) -> Chain<Self, R>
     where
         Self: Sized,
@@ -64,7 +39,7 @@ pub trait InitSans<I, O> {
         init_chain(self, r)
     }
 
-    /// Chain with a function that executes once.
+    /// Pass the final result to a function that yields once.
     fn chain_once<F>(self, f: F) -> Chain<Self, Once<F>>
     where
         Self: Sized,
@@ -74,7 +49,7 @@ pub trait InitSans<I, O> {
         self.chain(once(f))
     }
 
-    /// Chain with a function that repeats indefinitely.
+    /// Continue with a function that yields for every input.
     fn chain_repeat<F>(self, f: F) -> Chain<Self, Repeat<F>>
     where
         Self: Sized,
@@ -84,16 +59,37 @@ pub trait InitSans<I, O> {
         self.chain(repeat(f))
     }
 
-    /// Transform inputs before they reach the underlying coroutine.
+    /// Convert inputs before passing them to the coroutine.
+    ///
+    /// See [`map_input`](crate::compose::map_input) for an example.
     fn map_input<I2, F>(self, f: F) -> MapInput<Self, F>
     where
         Self: Sized,
         F: FnMut(I2) -> I,
     {
-        init_map_input(f, self)
+        map_input(f, self)
     }
 
-    /// Transform yielded values before returning them.
+    /// Share state between input processing and completion.
+    ///
+    /// See [`with_state`](crate::compose::with_state) for an example.
+    fn with_state<State, I2, R, Input, Finish>(
+        self,
+        state: State,
+        input: Input,
+        finish: Finish,
+    ) -> WithState<Self, State, Input, Finish>
+    where
+        Self: Sized,
+        Input: FnMut(&mut State, I2) -> I,
+        Finish: FnOnce(State, <Self::Next as Sans<I, O>>::Return) -> R,
+    {
+        crate::compose::with_state(self, state, input, finish)
+    }
+
+    /// Convert the initial output and each later output.
+    ///
+    /// See [`map_yield`](crate::compose::map_yield) for an example.
     fn map_yield<O2, F>(self, f: F) -> MapYield<Self, F, I, O>
     where
         Self: Sized,
@@ -102,16 +98,18 @@ pub trait InitSans<I, O> {
         init_map_yield(f, self)
     }
 
-    /// Transform the final result when completing.
-    fn map_done<D2, F>(self, f: F) -> MapReturn<Self, F>
+    /// Convert the final result, whether initialization or a later step completes.
+    ///
+    /// See [`map_return`](crate::compose::map_return) for an example.
+    fn map_return<D2, F>(self, f: F) -> MapReturn<Self, F>
     where
         Self: Sized,
         F: FnMut(<Self::Next as Sans<I, O>>::Return) -> D2,
     {
-        init_map_return(f, self)
+        map_return(f, self)
     }
 
-    /// Convert to an iterator.
+    /// Iterate over outputs, supplying `()` as each input.
     fn into_iter(self) -> InitSansIter<O, Self>
     where
         Self: Sized + InitSans<(), O>,
@@ -261,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn test_chain_and_map_done_resume_flow() {
+    fn test_chain_and_map_return_resume_flow() {
         use crate::build::once;
         let initializer = init_once(42_u32, |input: u32| input + 1);
         let finisher = once(|input: u32| input * 3);
@@ -269,7 +267,7 @@ mod tests {
         let first = initializer.chain(finisher);
         let (first_value, mut coro) = first
             .map_yield(|resume: u32| (resume + 7) as i32)
-            .map_done(|done: u32| done as i32 * 3)
+            .map_return(|done: u32| done as i32 * 3)
             .init()
             .unwrap_yielded();
 
@@ -312,7 +310,7 @@ mod tests {
             .chain(finisher)
             .map_input(|text: &str| text.parse::<u32>().expect("number"))
             .map_yield(|value: u32| format!("value={value}"))
-            .map_done(|resume: u32| format!("done={resume}"))
+            .map_return(|resume: u32| format!("done={resume}"))
             .init()
             .unwrap_yielded();
         assert_eq!("value=5", first_value);

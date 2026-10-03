@@ -1,26 +1,11 @@
-//! Chaining coroutines sequentially.
-//!
-//! This module provides the [`Chain`] and [`AndThen`] combinators for running
-//! coroutines one after another.
+//! Connect coroutines in sequence.
 
+use super::sequence::Sequence;
 use crate::{InitSans, Sans, step::Step};
 
-/// A coroutine that runs one coroutine to completion, then uses its return value
-/// to create and run a second coroutine.
-///
-/// This is similar to a monadic bind operation. The first coroutine runs until it
-/// completes, then its return value is passed to a function that produces the
-/// second coroutine (which must implement [`InitSans`]).
-///
-/// Created via the [`and_then`] function.
-///
-/// # Type Parameters
-///
-/// * `S1` - The type of the first coroutine
-/// * `S2` - The type of the second coroutine's continuation (after initialization)
-/// * `F` - The function type that creates the second coroutine from the first's return value
+/// Create the next coroutine from the final result. See [`Sans::and_then`].
 pub struct AndThen<S1, S2, F> {
-    state: AndThenState<S1, S2, F>,
+    state: Sequence<S1, S2, F>,
 }
 
 impl<I, O, L, R, F> Sans<I, O> for AndThen<L, R::Next, F>
@@ -32,94 +17,12 @@ where
 {
     type Return = <R::Next as Sans<I, O>>::Return;
     fn next(&mut self, input: I) -> Step<O, Self::Return> {
-        self.state.next(input)
+        self.state
+            .next(input, |f, value| f(value).init(), |value| value)
     }
 }
 
-enum AndThenState<S1, S2, F> {
-    OnFirst(S1, Option<F>),
-    OnSecond(S2),
-}
-
-impl<I, O, L, R, F> Sans<I, O> for AndThenState<L, R::Next, F>
-where
-    L: Sans<I, O>,
-    R: InitSans<I, O>,
-    R::Next: Sans<I, O>,
-    F: FnOnce(L::Return) -> R,
-{
-    type Return = <R::Next as Sans<I, O>>::Return;
-    fn next(&mut self, input: I) -> Step<O, Self::Return> {
-        match self {
-            AndThenState::OnFirst(l, f) => match l.next(input) {
-                Step::Yielded(o) => Step::Yielded(o),
-                Step::Complete(a) => {
-                    let r = f.take().expect("AndThen::can only be used once")(a);
-                    match r.init() {
-                        Step::Yielded((o, next_r)) => {
-                            *self = AndThenState::OnSecond(next_r);
-                            Step::Yielded(o)
-                        }
-                        Step::Complete(d) => Step::Complete(d),
-                    }
-                }
-            },
-            AndThenState::OnSecond(r) => r.next(input),
-        }
-    }
-}
-
-/// Chains two coroutines where the second coroutine is created from the first coroutine's return value.
-///
-/// This is a monadic bind operation for coroutines. The first coroutine runs to completion,
-/// then its return value is passed to a function `f` that creates the second coroutine.
-///
-/// **Important:** The function `f` must return an [`InitSans`], not just a [`Sans`]. Use the
-/// [`init()`](crate::build::init) helper to wrap a `Sans` with an initial output:
-///
-/// ```rust
-/// use sans::prelude::*;
-///
-/// // Using init() makes the syntax cleaner
-/// let mut coro = once(|x: i32| x * 2)
-///     .and_then(|val| init(val * 10, repeat(move |x| x + val)));
-/// ```
-///
-/// Alternatively, you can return a tuple `(initial_output, continuation)` or use
-/// [`Step::Complete`] for immediate completion.
-///
-/// # Arguments
-///
-/// * `l` - The first coroutine to run
-/// * `f` - A function that takes the first coroutine's return value and produces the second coroutine
-///
-/// # Returns
-///
-/// An [`AndThen`] continuation that runs both coroutines in sequence.
-///
-/// # Examples
-///
-/// ```
-/// use sans::prelude::*;
-/// use sans::compose::and_then;
-///
-/// // First coro yields once, then completes with a return value
-/// // Second coro uses that return value to configure its behavior
-/// let mut coro = and_then(
-///     once(|x: i32| x * 2),  // yields x*2, returns next input
-///     |return_val| init(return_val * 10, repeat(move |y: i32| y + return_val)),
-/// );
-///
-/// // First coro yields 5 * 2 = 10
-/// assert_eq!(coro.next(5).unwrap_yielded(), 10);
-///
-/// // First coro completes with return value = 7
-/// // Second coro initializes with (7*10, ...) and yields 70
-/// assert_eq!(coro.next(7).unwrap_yielded(), 70);
-///
-/// // Second coro continues: 3 + 7 = 10
-/// assert_eq!(coro.next(3).unwrap_yielded(), 10);
-/// ```
+/// Create the next coroutine from the final result. See [`Sans::and_then`] for an example.
 pub fn and_then<I, O, L, R, F>(l: L, f: F) -> AndThen<L, R::Next, F>
 where
     L: Sans<I, O>,
@@ -128,14 +31,13 @@ where
     F: FnOnce(L::Return) -> R,
 {
     AndThen {
-        state: AndThenState::OnFirst(l, Some(f)),
+        state: Sequence::OnFirst(l, Some(f)),
     }
 }
 
-/// Run the first coroutine to completion, then feed its result to the second.
+/// Pass the first coroutine's final result to the second as its first input.
 ///
-/// The first coroutine's `Done` value becomes the input to the second coroutine.
-/// Both coroutines must yield the same type.
+/// See [`Sans::chain`].
 pub fn chain<I, O, L, R>(l: L, r: R) -> Chain<L, R>
 where
     L: Sans<I, O, Return = I>,
@@ -144,9 +46,7 @@ where
     Chain(Some(l), r)
 }
 
-/// Create a chain from an InitSans coroutine and a coroutine.
-///
-/// This is used when chaining an initial coroutine (that yields immediately) with a coroutine.
+/// The [`chain`] constructor for an [`InitSans`].
 pub fn init_chain<I, O, L, R>(l: L, r: R) -> Chain<L, R>
 where
     L: InitSans<I, O>,
@@ -156,10 +56,9 @@ where
     Chain(Some(l), r)
 }
 
-/// Chains two coroutines sequentially.
+/// Two coroutines connected by [`chain`] or [`init_chain`].
 ///
-/// Created via `chain()` or `first_chain()`. The first coroutine is dropped from memory
-/// once it completes to free resources.
+/// The first coroutine is dropped when it completes.
 pub struct Chain<S1, S2>(Option<S1>, S2);
 
 impl<I, O, L, R> Sans<I, O> for Chain<L, R>

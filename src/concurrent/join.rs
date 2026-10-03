@@ -1,39 +1,10 @@
-//! Joining multiple coroutines for concurrent execution.
-//!
-//! This module provides the [`Join`] combinator for running multiple coroutines
-//! concurrently, polling them for outputs and directing inputs to specific coroutines.
-
 use crate::poll::{Poll, PollError, PollOutput, Pollable, init_poll, poll};
 use crate::{InitSans, Sans, Step};
 
-/// Create a [`Join`] from an array of [`InitSans`] coroutines.
+/// Initialize an array of coroutines and join their polling interfaces.
 ///
-/// Each coroutine is wrapped in a [`Pollable`] using [`init_poll`], allowing them to be
-/// polled concurrently. See [`Join`] for details on how concurrent execution works.
-///
-/// # Examples
-///
-/// ```
-/// use sans::prelude::*;
-/// use sans::poll::{Poll, PollOutput};
-/// use sans::concurrent::{init_join, JoinEnvelope};
-///
-/// // Create two coroutines with initial outputs
-/// fn add_one(x: i32) -> i32 { x + 1 }
-/// let f = add_one as fn(i32) -> i32;
-/// let coro1 = (100, repeat(f));
-/// let coro2 = (200, repeat(f));
-///
-/// let mut joined = init_join([coro1, coro2]);
-///
-/// // Poll to get initial outputs
-/// match joined.next(Poll::Poll) {
-///     Step::Yielded(PollOutput::Output(env)) => {
-///         assert!(*env.value() == 100 || *env.value() == 200);
-///     }
-///     _ => panic!("Expected output"),
-/// }
-/// ```
+/// Initialization runs here; initial outputs and completions are buffered until
+/// polled. See the [routing example](crate::concurrent).
 pub fn init_join<const N: usize, I, O, S, T>(rest: [T; N]) -> Join<N, S, O, S::Return>
 where
     T: InitSans<I, O, Next = S>,
@@ -44,37 +15,14 @@ where
     Join {
         pollables,
         returns: std::array::from_fn(|_| None),
-        last_index: 0,
-        complete: 0,
+        scheduler: Scheduler::default(),
     }
 }
 
-/// Create a [`Join`] from an array of [`Sans`] coroutines.
+/// Join an array of continuations, routing inputs and outputs by child ID.
 ///
-/// Wraps each coroutine in a [`Pollable`] for concurrent execution. The resulting [`Join`]
-/// can be polled to get outputs from any ready coroutine, or sent inputs directed to specific coroutines.
-///
-/// # Examples
-///
-/// ```
-/// use sans::prelude::*;
-/// use sans::poll::{Poll, PollOutput};
-/// use sans::concurrent::{join, JoinEnvelope};
-///
-/// fn add_one(x: i32) -> i32 { x + 1 }
-/// let coro1 = repeat(add_one);
-/// let coro2 = repeat(add_one);
-///
-/// let mut joined = join([coro1, coro2]);
-///
-/// // Send input to first coro
-/// match joined.next(Poll::Input(JoinEnvelope::new(0, 10))) {
-///     Step::Yielded(PollOutput::Output(env)) => {
-///         assert_eq!(*env.value(), 11);
-///     }
-///     _ => panic!("Expected output from coro 0"),
-/// }
-/// ```
+/// Use [`init_join`] for initializers. See the [routing example](crate::concurrent)
+/// and [`Join`] for completion behavior.
 pub fn join<const N: usize, I, O, S>(rest: [S; N]) -> Join<N, S, O, S::Return>
 where
     S: Sans<I, O>,
@@ -82,14 +30,11 @@ where
     Join {
         pollables: rest.map(|s| poll(s)),
         returns: std::array::from_fn(|_| None),
-        last_index: 0,
-        complete: 0,
+        scheduler: Scheduler::default(),
     }
 }
 
-/// Create a [`JoinVec`] from a vector of [`Sans`] coroutines.
-///
-/// Like [`join`] but accepts a dynamic number of coroutines at runtime.
+/// Like [`join`], with a runtime-sized vector of continuations.
 pub fn join_vec<I, O, S>(sans: Vec<S>) -> JoinVec<S, O, S::Return>
 where
     S: Sans<I, O>,
@@ -98,14 +43,11 @@ where
     JoinVec {
         pollables: sans.into_iter().map(|s| poll(s)).collect(),
         returns: (0..len).map(|_| None).collect(),
-        last_index: 0,
-        complete: 0,
+        scheduler: Scheduler::default(),
     }
 }
 
-/// Create a [`JoinVec`] from a vector of [`InitSans`] coroutines.
-///
-/// Like [`init_join`] but accepts a dynamic number of coroutines at runtime.
+/// Like [`init_join`], with a runtime-sized vector of initializers.
 pub fn init_join_vec<I, O, S, T>(inits: Vec<T>) -> JoinVec<S, O, S::Return>
 where
     T: InitSans<I, O, Next = S>,
@@ -115,47 +57,145 @@ where
     JoinVec {
         pollables: inits.into_iter().map(|init| init_poll(init)).collect(),
         returns: (0..len).map(|_| None).collect(),
-        last_index: 0,
-        complete: 0,
+        scheduler: Scheduler::default(),
     }
 }
 
-/// Runs multiple coroutines concurrently, allowing them to be polled and fed inputs independently.
+/// An array of coroutines driven through one polling interface.
 ///
-/// `Join` coordinates execution of `N` coroutines, each wrapped in a [`Pollable`]. Inputs and outputs
-/// are tagged with a [`JoinEnvelope`] containing the coroutine index.
+/// Construct with [`join`] or [`init_join`]. Polls check unfinished children in
+/// round-robin order; inputs go to the child named by their [`JoinEnvelope`].
 ///
-/// When polled (`Poll::Poll`), it uses round-robin scheduling to check each coroutine for available
-/// output. Inputs (`Poll::Input(JoinEnvelope(index, value))`) are routed to the specified coroutine.
-///
-/// The join completes when all coroutines complete, returning an array of their return values.
+/// The join completes after every child completes, returning values in array order.
+/// A child's `Err` return is stored like any other value. Only a [`JoinError`]
+/// ends the join early: an invalid child ID or input sent to a completed child.
+/// After the whole join completes or fails, later calls return
+/// [`JoinError::AlreadyComplete`].
 pub struct Join<const N: usize, S, O, R> {
     pollables: [Pollable<S, O, R>; N],
     returns: [Option<R>; N],
-    last_index: usize,
-    complete: usize,
+    scheduler: Scheduler,
 }
 
-/// Vec-based version of [`Join`] for dynamic number of coroutines.
+/// A runtime-sized version of [`Join`] with the same polling and error behavior.
 ///
-/// Like [`Join`] but uses a `Vec` to store coroutines, allowing the number to be determined at runtime.
+/// Construct with [`join_vec`] or [`init_join_vec`]. Returns child values in vector order.
 pub struct JoinVec<S, O, R> {
     pollables: Vec<Pollable<S, O, R>>,
     returns: Vec<Option<R>>,
-    last_index: usize,
-    complete: usize,
+    scheduler: Scheduler,
 }
 
-/// Errors that can occur during join execution.
+// Array and vector joins share scheduling, but keep their own storage and return types.
+#[derive(Default)]
+struct Scheduler {
+    last_index: usize,
+    complete: usize,
+    closed: bool,
+}
+
+impl Scheduler {
+    fn next<I, O, S>(
+        &mut self,
+        pollables: &mut [Pollable<S, O, S::Return>],
+        returns: &mut [Option<S::Return>],
+        input: Poll<JoinEnvelope<I>>,
+    ) -> Step<PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Result<(), JoinError>>
+    where
+        S: Sans<I, O>,
+    {
+        if self.closed {
+            return Step::Complete(Err(JoinError::AlreadyComplete));
+        }
+        let result = match input {
+            Poll::Poll => {
+                let len = pollables.len();
+                let mut idx = self.last_index;
+                for _ in 0..len {
+                    idx = if idx + 1 == len { 0 } else { idx + 1 };
+                    if returns[idx].is_some() {
+                        continue;
+                    }
+                    match pollables[idx].next(Poll::Poll) {
+                        Step::Yielded(PollOutput::Output(output)) => {
+                            self.last_index = idx;
+                            return Step::Yielded(PollOutput::Output(JoinEnvelope::new(
+                                idx, output,
+                            )));
+                        }
+                        Step::Yielded(PollOutput::NeedsInput | PollOutput::NeedsPoll(_)) => {}
+                        Step::Complete(Ok(value)) => {
+                            returns[idx] = Some(value);
+                            self.complete += 1;
+                        }
+                        Step::Complete(Err(error)) => {
+                            self.closed = true;
+                            return Step::Complete(Err(JoinError::PollableFailed(
+                                JoinId::new(idx),
+                                error,
+                            )));
+                        }
+                    }
+                }
+                if self.complete == len {
+                    Step::Complete(Ok(()))
+                } else {
+                    Step::Yielded(PollOutput::NeedsInput)
+                }
+            }
+            Poll::Input(JoinEnvelope(id, input)) => {
+                let idx = id.as_usize();
+                match pollables.get_mut(idx) {
+                    None => Step::Complete(Err(JoinError::InvalidIndex(id))),
+                    Some(pollable) => match pollable.next(Poll::Input(input)) {
+                        Step::Yielded(PollOutput::Output(output)) => {
+                            Step::Yielded(PollOutput::Output(JoinEnvelope(id, output)))
+                        }
+                        Step::Yielded(PollOutput::NeedsPoll(input)) => {
+                            Step::Yielded(PollOutput::NeedsPoll(JoinEnvelope(id, input)))
+                        }
+                        Step::Yielded(PollOutput::NeedsInput) => {
+                            Step::Yielded(PollOutput::NeedsInput)
+                        }
+                        Step::Complete(Ok(value)) => {
+                            returns[idx] = Some(value);
+                            self.complete += 1;
+                            if self.complete == pollables.len() {
+                                Step::Complete(Ok(()))
+                            } else {
+                                Step::Yielded(PollOutput::NeedsInput)
+                            }
+                        }
+                        Step::Complete(Err(error)) => {
+                            Step::Complete(Err(JoinError::PollableFailed(id, error)))
+                        }
+                    },
+                }
+            }
+        };
+        if matches!(result, Step::Complete(_)) {
+            self.closed = true;
+        }
+        result
+    }
+}
+
+/// A join protocol error, separate from child return values.
 #[derive(Debug)]
 pub enum JoinError {
-    /// A pollable coroutine failed with the given index and error.
+    /// A child rejected an operation, such as input after completion.
     PollableFailed(JoinId, PollError),
+    /// The requested coroutine index is outside the join.
+    InvalidIndex(JoinId),
+    /// The join already returned a completion or error.
+    AlreadyComplete,
 }
 
 impl std::fmt::Display for JoinError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            JoinError::InvalidIndex(id) => write!(f, "invalid join index {}", id.as_usize()),
+            JoinError::AlreadyComplete => write!(f, "join already complete"),
             JoinError::PollableFailed(id, err) => {
                 write!(f, "pollable at index {} failed: {}", id.as_usize(), err)
             }
@@ -165,9 +205,7 @@ impl std::fmt::Display for JoinError {
 
 impl std::error::Error for JoinError {}
 
-/// Identifier for a coroutine in a [`Join`] operation.
-///
-/// This is a type-safe wrapper around a coroutine index.
+/// A child identifier carried by [`JoinEnvelope`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JoinId(usize);
 
@@ -181,11 +219,10 @@ impl JoinId {
     }
 }
 
-/// Wraps values with a coroutine index for routing in [`Join`] operations.
+/// A child ID and value used to route join inputs and outputs.
 ///
-/// The first field is the coroutine index, the second is the wrapped value.
-///
-/// Implements `Deref` to access the inner value conveniently.
+/// Use [`map`](Self::map) to build a response for the same child.
+/// [`value`](Self::value) and `Deref` borrow the inner value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JoinEnvelope<T>(pub JoinId, pub T);
 
@@ -200,6 +237,9 @@ impl<T> JoinEnvelope<T> {
         &self.1
     }
 
+    /// Transform the value while preserving its child ID.
+    ///
+    /// See the [routing example](crate::concurrent).
     pub fn map<U, F>(self, f: F) -> JoinEnvelope<U>
     where
         F: FnOnce(T) -> U,
@@ -228,135 +268,17 @@ where
         &mut self,
         input: Poll<JoinEnvelope<I>>,
     ) -> Step<PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Return> {
-        match input {
-            Poll::Poll => {
-                // Round-robin through pollables looking for output
-                for i in 0..N {
-                    let idx = (self.last_index + 1 + i) % N;
-                    if let Some(pollable) = self.pollables.get_mut(idx) {
-                        match pollable.next(Poll::Poll) {
-                            Step::Yielded(PollOutput::Output(o)) => {
-                                self.last_index = idx;
-                                return Step::Yielded(PollOutput::Output(JoinEnvelope(
-                                    JoinId::new(idx),
-                                    o,
-                                )));
-                            }
-                            Step::Yielded(PollOutput::NeedsInput) => continue,
-                            Step::Yielded(PollOutput::Complete) => {
-                                // This shouldn't happen - Complete is not yielded, it's in Step::Complete
-                                continue;
-                            }
-                            Step::Yielded(PollOutput::NeedsPoll(_)) => {
-                                // This shouldn't happen when polling
-                                continue;
-                            }
-                            Step::Complete(Ok(r)) => {
-                                // Store the return value
-                                self.returns[idx] = Some(r);
-                                self.complete += 1;
-
-                                // Check if all are done
-                                if self.complete == N {
-                                    // Collect all returns
-                                    let results: [S::Return; N] = std::array::from_fn(|i| {
-                                        self.returns[i]
-                                            .take()
-                                            .expect("return value should be present")
-                                    });
-                                    return Step::Complete(Ok(results));
-                                }
-                                continue;
-                            }
-                            Step::Complete(Err(e)) => {
-                                return Step::Complete(Err(JoinError::PollableFailed(
-                                    JoinId::new(idx),
-                                    e,
-                                )));
-                            }
-                        }
-                    }
-                }
-
-                // Check if all are complete
-                if self.complete == N {
-                    // Collect all returns
-                    let results: [S::Return; N] = std::array::from_fn(|i| {
-                        self.returns[i]
-                            .take()
-                            .expect("return value should be present")
-                    });
-                    return Step::Complete(Ok(results));
-                }
-
-                // All waiting for input
-                Step::Yielded(PollOutput::NeedsInput)
-            }
-
-            Poll::Input(JoinEnvelope(id, input)) => {
-                let idx = id.as_usize();
-                if let Some(pollable) = self.pollables.get_mut(idx) {
-                    match pollable.next(Poll::Input(input)) {
-                        Step::Yielded(PollOutput::Output(o)) => {
-                            Step::Yielded(PollOutput::Output(JoinEnvelope(id, o)))
-                        }
-                        Step::Yielded(PollOutput::NeedsPoll(i2)) => {
-                            Step::Yielded(PollOutput::NeedsPoll(JoinEnvelope(id, i2)))
-                        }
-                        Step::Yielded(PollOutput::NeedsInput) => {
-                            Step::Yielded(PollOutput::NeedsInput)
-                        }
-                        Step::Yielded(PollOutput::Complete) => {
-                            // Shouldn't happen
-                            Step::Yielded(PollOutput::NeedsInput)
-                        }
-                        Step::Complete(Ok(r)) => {
-                            // Store the return value
-                            self.returns[idx] = Some(r);
-                            self.complete += 1;
-
-                            if self.complete == N {
-                                // All done - collect all returns
-                                let results: [S::Return; N] = std::array::from_fn(|i| {
-                                    self.returns[i]
-                                        .take()
-                                        .expect("return value should be present")
-                                });
-                                return Step::Complete(Ok(results));
-                            }
-                            Step::Yielded(PollOutput::NeedsInput)
-                        }
-                        Step::Complete(Err(e)) => {
-                            Step::Complete(Err(JoinError::PollableFailed(id, e)))
-                        }
-                    }
-                } else {
-                    // This shouldn't happen - idx out of bounds
-                    unreachable!("index {} out of bounds for pollables array", idx)
-                }
-            }
-        }
-    }
-}
-
-// also implement InitSans for Join
-impl<const N: usize, I, O, S>
-    InitSans<Poll<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>
-    for Join<N, S, O, S::Return>
-where
-    S: Sans<I, O>,
-{
-    type Next = Self;
-
-    fn init(
-        mut self,
-    ) -> Step<
-        (PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Next),
-        <Self::Next as Sans<Poll<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>>::Return,
-    >{
-        match self.next(Poll::Poll) {
-            Step::Yielded(o) => Step::Yielded((o, self)),
-            Step::Complete(r) => Step::Complete(r),
+        match self
+            .scheduler
+            .next(&mut self.pollables, &mut self.returns, input)
+        {
+            Step::Yielded(output) => Step::Yielded(output),
+            Step::Complete(Ok(())) => Step::Complete(Ok(std::array::from_fn(|i| {
+                self.returns[i]
+                    .take()
+                    .expect("completed child has a return value")
+            }))),
+            Step::Complete(Err(error)) => Step::Complete(Err(error)),
         }
     }
 }
@@ -373,131 +295,17 @@ where
         &mut self,
         input: Poll<JoinEnvelope<I>>,
     ) -> Step<PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Return> {
-        let n = self.pollables.len();
-
-        match input {
-            Poll::Poll => {
-                // Round-robin through pollables looking for output
-                for i in 0..n {
-                    let idx = (self.last_index + 1 + i) % n;
-                    if let Some(pollable) = self.pollables.get_mut(idx) {
-                        match pollable.next(Poll::Poll) {
-                            Step::Yielded(PollOutput::Output(o)) => {
-                                self.last_index = idx;
-                                return Step::Yielded(PollOutput::Output(JoinEnvelope(
-                                    JoinId::new(idx),
-                                    o,
-                                )));
-                            }
-                            Step::Yielded(PollOutput::NeedsInput) => continue,
-                            Step::Yielded(PollOutput::Complete) => continue,
-                            Step::Yielded(PollOutput::NeedsPoll(_)) => continue,
-                            Step::Complete(Ok(r)) => {
-                                // Store the return value
-                                self.returns[idx] = Some(r);
-                                self.complete += 1;
-
-                                // Check if all are done
-                                if self.complete == n {
-                                    // Collect all returns
-                                    let results: Vec<S::Return> = self
-                                        .returns
-                                        .iter_mut()
-                                        .map(|opt| {
-                                            opt.take().expect("return value should be present")
-                                        })
-                                        .collect();
-                                    return Step::Complete(Ok(results));
-                                }
-                                continue;
-                            }
-                            Step::Complete(Err(e)) => {
-                                return Step::Complete(Err(JoinError::PollableFailed(
-                                    JoinId::new(idx),
-                                    e,
-                                )));
-                            }
-                        }
-                    }
-                }
-
-                // Check if all are complete
-                if self.complete == n {
-                    // Collect all returns
-                    let results: Vec<S::Return> = self
-                        .returns
-                        .iter_mut()
-                        .map(|opt| opt.take().expect("return value should be present"))
-                        .collect();
-                    return Step::Complete(Ok(results));
-                }
-
-                // All waiting for input
-                Step::Yielded(PollOutput::NeedsInput)
-            }
-
-            Poll::Input(JoinEnvelope(id, input)) => {
-                let idx = id.as_usize();
-                if let Some(pollable) = self.pollables.get_mut(idx) {
-                    match pollable.next(Poll::Input(input)) {
-                        Step::Yielded(PollOutput::Output(o)) => {
-                            Step::Yielded(PollOutput::Output(JoinEnvelope(id, o)))
-                        }
-                        Step::Yielded(PollOutput::NeedsPoll(i2)) => {
-                            Step::Yielded(PollOutput::NeedsPoll(JoinEnvelope(id, i2)))
-                        }
-                        Step::Yielded(PollOutput::NeedsInput) => {
-                            Step::Yielded(PollOutput::NeedsInput)
-                        }
-                        Step::Yielded(PollOutput::Complete) => {
-                            Step::Yielded(PollOutput::NeedsInput)
-                        }
-                        Step::Complete(Ok(r)) => {
-                            // Store the return value
-                            self.returns[idx] = Some(r);
-                            self.complete += 1;
-
-                            if self.complete == n {
-                                // All done - collect all returns
-                                let results: Vec<S::Return> = self
-                                    .returns
-                                    .iter_mut()
-                                    .map(|opt| opt.take().expect("return value should be present"))
-                                    .collect();
-                                return Step::Complete(Ok(results));
-                            }
-                            Step::Yielded(PollOutput::NeedsInput)
-                        }
-                        Step::Complete(Err(e)) => {
-                            Step::Complete(Err(JoinError::PollableFailed(id, e)))
-                        }
-                    }
-                } else {
-                    // This shouldn't happen - idx out of bounds
-                    unreachable!("index {} out of bounds for pollables vec", idx)
-                }
-            }
-        }
-    }
-}
-
-// Implement InitSans for JoinVec
-impl<I, O, S> InitSans<Poll<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>
-    for JoinVec<S, O, S::Return>
-where
-    S: Sans<I, O>,
-{
-    type Next = Self;
-
-    fn init(
-        mut self,
-    ) -> Step<
-        (PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>, Self::Next),
-        <Self::Next as Sans<Poll<JoinEnvelope<I>>, PollOutput<JoinEnvelope<I>, JoinEnvelope<O>>>>::Return,
-    >{
-        match self.next(Poll::Poll) {
-            Step::Yielded(o) => Step::Yielded((o, self)),
-            Step::Complete(r) => Step::Complete(r),
+        match self
+            .scheduler
+            .next(&mut self.pollables, &mut self.returns, input)
+        {
+            Step::Yielded(output) => Step::Yielded(output),
+            Step::Complete(Ok(())) => Step::Complete(Ok(self
+                .returns
+                .iter_mut()
+                .map(|value| value.take().expect("completed child has a return value"))
+                .collect())),
+            Step::Complete(Err(error)) => Step::Complete(Err(error)),
         }
     }
 }
@@ -506,6 +314,266 @@ where
 mod tests {
     use super::*;
     use crate::build::{once, repeat};
+
+    // Identical lifecycle scenarios exercise both storage implementations.
+    struct Worker;
+
+    impl Sans<i32, i32> for Worker {
+        type Return = i32;
+        fn next(&mut self, input: i32) -> Step<i32, i32> {
+            Step::Complete(input)
+        }
+    }
+
+    enum Start {
+        Output(i32),
+        Complete(i32),
+    }
+
+    impl InitSans<i32, i32> for Start {
+        type Next = Worker;
+        fn init(self) -> Step<(i32, Worker), i32> {
+            match self {
+                Self::Output(value) => Step::Yielded((value, Worker)),
+                Self::Complete(value) => Step::Complete(value),
+            }
+        }
+    }
+
+    fn assert_closed<G, R>(joined: &mut G)
+    where
+        G: Sans<
+                Poll<JoinEnvelope<i32>>,
+                PollOutput<JoinEnvelope<i32>, JoinEnvelope<i32>>,
+                Return = Result<R, JoinError>,
+            >,
+        R: std::fmt::Debug,
+    {
+        for input in [Poll::Poll, Poll::Input(JoinEnvelope::new(usize::MAX, 5))] {
+            assert!(matches!(
+                joined.next(input),
+                Step::Complete(Err(JoinError::AlreadyComplete))
+            ));
+        }
+    }
+
+    fn routed_completion<G, R>(mut joined: G)
+    where
+        G: Sans<
+                Poll<JoinEnvelope<i32>>,
+                PollOutput<JoinEnvelope<i32>, JoinEnvelope<i32>>,
+                Return = Result<R, JoinError>,
+            >,
+        R: AsRef<[i32]> + std::fmt::Debug,
+    {
+        assert!(matches!(
+            joined.next(Poll::Input(JoinEnvelope::new(1, 20))),
+            Step::Yielded(PollOutput::NeedsInput)
+        ));
+        // A completed child must never be polled again, including consecutive scans.
+        for _ in 0..3 {
+            assert!(matches!(
+                joined.next(Poll::Poll),
+                Step::Yielded(PollOutput::NeedsInput)
+            ));
+        }
+        let result = joined
+            .next(Poll::Input(JoinEnvelope::new(0, 10)))
+            .expect_complete("all finished")
+            .unwrap();
+        assert_eq!(result.as_ref(), [10, 20]);
+        assert_closed(&mut joined);
+    }
+
+    #[test]
+    fn routed_completion_skips_finished_children_and_preserves_order() {
+        routed_completion(join([Worker, Worker]));
+        routed_completion(join_vec(vec![Worker, Worker]));
+    }
+
+    fn initializer_completion<G, R>(mut joined: G)
+    where
+        G: Sans<
+                Poll<JoinEnvelope<i32>>,
+                PollOutput<JoinEnvelope<i32>, JoinEnvelope<i32>>,
+                Return = Result<R, JoinError>,
+            >,
+        R: AsRef<[i32]> + std::fmt::Debug,
+    {
+        // Pending initial output blocks input, preserving the supplied value.
+        assert!(
+            matches!(joined.next(Poll::Input(JoinEnvelope::new(0, 7))), Step::Yielded(PollOutput::NeedsPoll(JoinEnvelope(id, 7))) if id.as_usize() == 0)
+        );
+        assert!(
+            matches!(joined.next(Poll::Poll), Step::Yielded(PollOutput::Output(JoinEnvelope(id, 100))) if id.as_usize() == 0)
+        );
+        assert!(matches!(
+            joined.next(Poll::Poll),
+            Step::Yielded(PollOutput::NeedsInput)
+        ));
+        let result = joined
+            .next(Poll::Input(JoinEnvelope::new(0, 10)))
+            .expect_complete("initializer and routed child finished")
+            .unwrap();
+        assert_eq!(result.as_ref(), [10, 20]);
+        assert_closed(&mut joined);
+    }
+
+    #[test]
+    fn initializer_completion_skips_finished_children() {
+        initializer_completion(init_join([Start::Output(100), Start::Complete(20)]));
+        initializer_completion(init_join_vec(vec![Start::Output(100), Start::Complete(20)]));
+    }
+
+    fn all_initially_complete<G, R>(mut joined: G)
+    where
+        G: Sans<
+                Poll<JoinEnvelope<i32>>,
+                PollOutput<JoinEnvelope<i32>, JoinEnvelope<i32>>,
+                Return = Result<R, JoinError>,
+            >,
+        R: AsRef<[i32]> + std::fmt::Debug,
+    {
+        let result = joined
+            .next(Poll::Poll)
+            .expect_complete("all initially finished")
+            .unwrap();
+        assert_eq!(result.as_ref(), [10, 20]);
+        assert_closed(&mut joined);
+    }
+
+    #[test]
+    fn all_initializer_completions_preserve_order() {
+        all_initially_complete(init_join([Start::Complete(10), Start::Complete(20)]));
+        all_initially_complete(init_join_vec(vec![
+            Start::Complete(10),
+            Start::Complete(20),
+        ]));
+    }
+
+    fn invalid_index<G, R>(mut joined: G, index: usize)
+    where
+        G: Sans<
+                Poll<JoinEnvelope<i32>>,
+                PollOutput<JoinEnvelope<i32>, JoinEnvelope<i32>>,
+                Return = Result<R, JoinError>,
+            >,
+        R: std::fmt::Debug,
+    {
+        assert!(
+            matches!(joined.next(Poll::Input(JoinEnvelope::new(index, 0))), Step::Complete(Err(JoinError::InvalidIndex(id))) if id.as_usize() == index)
+        );
+        assert_closed(&mut joined);
+    }
+
+    #[test]
+    fn invalid_indices_and_empty_inputs_close_join() {
+        for index in [1, usize::MAX] {
+            invalid_index(join([Worker]), index);
+            invalid_index(join_vec(vec![Worker]), index);
+        }
+        for index in [0, usize::MAX] {
+            invalid_index(join::<0, i32, i32, Worker>([]), index);
+            invalid_index(join_vec::<i32, i32, Worker>(vec![]), index);
+        }
+    }
+
+    fn empty_poll<G, R>(mut joined: G)
+    where
+        G: Sans<
+                Poll<JoinEnvelope<i32>>,
+                PollOutput<JoinEnvelope<i32>, JoinEnvelope<i32>>,
+                Return = Result<R, JoinError>,
+            >,
+        R: AsRef<[i32]> + std::fmt::Debug,
+    {
+        let result = joined
+            .next(Poll::Poll)
+            .expect_complete("empty join finished")
+            .unwrap();
+        assert!(result.as_ref().is_empty());
+        assert_closed(&mut joined);
+    }
+
+    #[test]
+    fn empty_poll_closes_join() {
+        empty_poll(join::<0, i32, i32, Worker>([]));
+        empty_poll(join_vec::<i32, i32, Worker>(vec![]));
+    }
+
+    fn completed_child_input<G, R>(mut joined: G)
+    where
+        G: Sans<
+                Poll<JoinEnvelope<i32>>,
+                PollOutput<JoinEnvelope<i32>, JoinEnvelope<i32>>,
+                Return = Result<R, JoinError>,
+            >,
+        R: std::fmt::Debug,
+    {
+        joined
+            .next(Poll::Input(JoinEnvelope::new(0, 10)))
+            .expect_yielded("one child remains");
+        assert!(
+            matches!(joined.next(Poll::Input(JoinEnvelope::new(0, 99))), Step::Complete(Err(JoinError::PollableFailed(id, PollError::AlreadyComplete))) if id.as_usize() == 0)
+        );
+        assert_closed(&mut joined);
+    }
+
+    #[test]
+    fn completed_child_input_reports_error_and_closes_join() {
+        completed_child_input(join([Worker, Worker]));
+        completed_child_input(join_vec(vec![Worker, Worker]));
+    }
+
+    fn initial_output_order<G, R>(mut joined: G)
+    where
+        G: Sans<
+                Poll<JoinEnvelope<i32>>,
+                PollOutput<JoinEnvelope<i32>, JoinEnvelope<i32>>,
+                Return = Result<R, JoinError>,
+            >,
+        R: std::fmt::Debug,
+    {
+        for expected in [1, 2, 0] {
+            assert!(
+                matches!(joined.next(Poll::Poll), Step::Yielded(PollOutput::Output(JoinEnvelope(id, value))) if id.as_usize() == expected && value == expected as i32)
+            );
+        }
+        assert!(matches!(
+            joined.next(Poll::Poll),
+            Step::Yielded(PollOutput::NeedsInput)
+        ));
+    }
+
+    #[test]
+    fn initial_outputs_keep_existing_round_robin_order() {
+        initial_output_order(init_join([
+            Start::Output(0),
+            Start::Output(1),
+            Start::Output(2),
+        ]));
+        initial_output_order(init_join_vec(vec![
+            Start::Output(0),
+            Start::Output(1),
+            Start::Output(2),
+        ]));
+    }
+
+    #[test]
+    fn errors_have_display_messages() {
+        assert_eq!(
+            JoinError::InvalidIndex(JoinId::new(5)).to_string(),
+            "invalid join index 5"
+        );
+        assert_eq!(
+            JoinError::AlreadyComplete.to_string(),
+            "join already complete"
+        );
+        assert_eq!(
+            JoinError::PollableFailed(JoinId::new(2), PollError::AlreadyComplete).to_string(),
+            "pollable at index 2 failed: already complete"
+        );
+    }
 
     #[test]
     fn test_join_two_sans_basic() {

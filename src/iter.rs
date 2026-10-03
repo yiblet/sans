@@ -1,22 +1,7 @@
-//! Iterator adapters for Sans coroutines with unit input.
+//! Iterate over outputs from coroutines that accept `()` as input.
 //!
-//! This module provides iterator adapters for [`Sans<(), O>`] and [`InitSans<(), O>`],
-//! allowing you to iterate over yielded values and access the final return value.
+//! Use `by_ref()` to keep the iterator and read its final result afterward.
 //!
-//! # Examples
-//!
-//! Basic usage with [`Sans`]:
-//! ```rust
-//! use sans::prelude::*;
-//!
-//! let mut iter = repeat(|()| 42).into_iter();
-//! // Take 3 values
-//! let values: Vec<_> = (&mut iter).take(3).collect();
-//! assert_eq!(values, vec![42, 42, 42]);
-//! // Iterator never completes for repeat, so no return value
-//! ```
-//!
-//! With [`InitSans`]:
 //! ```rust
 //! use sans::prelude::*;
 //!
@@ -28,13 +13,7 @@
 
 use crate::{InitSans, Sans, Step};
 
-/// Iterator adapter for [`Sans<(), O>`].
-///
-/// Repeatedly calls `next(())` on the wrapped coroutine and yields values
-/// until the coroutine completes.
-///
-/// Both `SansIter` and `&mut SansIter` implement `Iterator`, allowing you to
-/// iterate without consuming the wrapper, so you can later access the return value.
+/// Yield outputs from a [`Sans`] coroutine, supplying `()` as each input.
 pub struct SansIter<O, S>
 where
     S: Sans<(), O>,
@@ -64,7 +43,7 @@ impl<O, S> SansIter<O, S>
 where
     S: Sans<(), O>,
 {
-    /// Create a new iterator from a Sans coroutine.
+    /// Create an iterator from a coroutine.
     pub fn new(sans: S) -> Self {
         Self {
             state: SansIterState::Active(sans),
@@ -76,9 +55,7 @@ where
         matches!(self.state, SansIterState::Complete(_))
     }
 
-    /// Consume the iterator and return the final value if complete.
-    ///
-    /// Returns `None` if the iterator hasn't completed yet.
+    /// Take the final result, or `None` if iteration has not completed.
     pub fn into_return(self) -> Option<S::Return> {
         match self.state {
             SansIterState::Complete(ret) => Some(ret),
@@ -86,7 +63,7 @@ where
         }
     }
 
-    /// Get a reference to the return value if complete.
+    /// Borrow the final result, or `None` if iteration has not completed.
     pub fn return_value(&self) -> Option<&S::Return> {
         match &self.state {
             SansIterState::Complete(ret) => Some(ret),
@@ -123,12 +100,9 @@ where
     }
 }
 
-/// Iterator adapter for [`InitSans<(), O>`].
+/// Yield the initial output, then continue with `()` as each input.
 ///
-/// Calls `init()` on the wrapped coroutine to get the initial value and continuation,
-/// then repeatedly calls `next(())` on the continuation.
-///
-/// Both `InitSansIter` and `&mut InitSansIter` implement `Iterator`.
+/// Initialization runs on the first call to [`Iterator::next`].
 pub struct InitSansIter<O, S>
 where
     S: InitSans<(), O>,
@@ -159,7 +133,7 @@ impl<O, S> InitSansIter<O, S>
 where
     S: InitSans<(), O>,
 {
-    /// Create a new iterator from an InitSans coroutine.
+    /// Create an iterator from an initializer.
     pub fn new(init_sans: S) -> Self {
         Self {
             state: InitSansIterState::Uninit(init_sans),
@@ -171,9 +145,7 @@ where
         matches!(self.state, InitSansIterState::Complete(_))
     }
 
-    /// Consume the iterator and return the final value if complete.
-    ///
-    /// Returns `None` if the iterator hasn't completed yet.
+    /// Take the final result, or `None` if iteration has not completed.
     pub fn into_return(self) -> Option<<S::Next as Sans<(), O>>::Return> {
         match self.state {
             InitSansIterState::Complete(ret) => Some(ret),
@@ -181,7 +153,7 @@ where
         }
     }
 
-    /// Get a reference to the return value if complete.
+    /// Borrow the final result, or `None` if iteration has not completed.
     pub fn return_value(&self) -> Option<&<S::Next as Sans<(), O>>::Return> {
         match &self.state {
             InitSansIterState::Complete(ret) => Some(ret),

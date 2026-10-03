@@ -1,6 +1,6 @@
-//! Run coroutines one after another
+//! Run an array of coroutines in order with [`many`].
 //!
-//! This module provides sequential execution combinators.
+//! For two coroutines of different types, use [`Sans::chain`](crate::Sans::chain).
 
 mod many;
 

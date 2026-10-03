@@ -1,6 +1,15 @@
-//! Polling for both [`Sans`] and [`InitSans`]
+//! Separate output checks from input delivery.
 //!
-//! This module provides a universal adapter for polling both [`Sans`] and [`InitSans`].
+//! Wrap a continuation with [`poll`], or an initializer with [`init_poll`]. Send
+//! [`Poll::Poll`] to retrieve buffered output and [`Poll::Input`] to supply input.
+//! These operations are synchronous; this is not `Future` polling.
+//!
+//! [`PollOutput::NeedsInput`] asks for input. [`PollOutput::NeedsPoll`] returns an
+//! unconsumed input: poll for the buffered output or completion before retrying it.
+//! [`Step::Complete`] ends the run; later calls return [`PollError::AlreadyComplete`].
+//!
+//! Both adapters implement [`Sans`]. Use [`start`](crate::build::start) with
+//! [`Poll::Poll`] when a runner needs an initializer.
 use crate::{InitSans, Sans, Step};
 
 enum PollState<S, O, R> {
@@ -41,27 +50,15 @@ impl<S, O, R> PollState<S, O, R> {
     }
 }
 
-/// A coroutine wrapper that allows polling for outputs and asynchronously providing inputs.
+/// A coroutine with separate output checks and input delivery.
 ///
-/// Created via [`poll`] or [`init_poll`]. Wraps a [`Sans`] coroutine to enable explicit
-/// control over when inputs are provided and outputs are retrieved.
-///
-/// # Universal Adapter Property
-///
-/// `Pollable` uniquely implements both [`Sans`] and [`InitSans`] for the same input/output types,
-/// making it a universal adapter. This allows you to:
-/// - Wrap a [`Sans`] to use where an [`InitSans`] is required
-/// - Wrap an [`InitSans`] to use where a [`Sans`] is required
-///
-/// This adapter capability is useful beyond concurrent execution - anywhere you need to bridge
-/// between APIs expecting different trait bounds.
+/// Construct with [`poll`] or [`init_poll`]. See the [polling guide](crate::poll)
+/// for the protocol.
 pub struct Pollable<S, O, R> {
     state: PollState<S, O, R>,
 }
 
-/// Input type for [`Pollable`] coroutines.
-///
-/// Either polls for available output or provides an input value.
+/// An output check or input delivery for a polling coroutine.
 pub enum Poll<I> {
     /// Check if there's output available without providing input.
     Poll,
@@ -74,11 +71,9 @@ pub enum Poll<I> {
 pub enum PollOutput<I, O> {
     /// Coroutine produced an output value.
     Output(O),
-    /// Coroutine completed (should not occur in Yielded, only in Complete).
-    Complete,
     /// Coroutine needs input before it can produce output.
     NeedsInput,
-    /// Input was provided but coroutine wasn't ready for it; poll first.
+    /// Returns unconsumed input; poll for buffered output or completion first.
     NeedsPoll(I),
 }
 
@@ -99,34 +94,17 @@ impl std::fmt::Display for PollError {
 
 impl std::error::Error for PollError {}
 
-/// Wrap a [`Sans`] coroutine in a [`Pollable`] for explicit input/output control.
+/// Wrap a continuation for polling and input delivery.
 ///
-/// The resulting [`Pollable`] can be polled with [`Poll::Poll`] to check for available
-/// output, or sent inputs with [`Poll::Input`].
-///
-/// **Note:** Because [`Pollable`] implements both [`Sans`] and [`InitSans`], this also serves
-/// as an adapter to use a [`Sans`] where an [`InitSans`] is required.
-///
-/// # Examples
+/// The first poll returns [`PollOutput::NeedsInput`]. See the
+/// [polling guide](crate::poll) for the protocol.
 ///
 /// ```
-/// use sans::prelude::*;
-/// use sans::poll::{Poll, PollOutput};
+/// use sans::{Sans, build::repeat, poll::{poll, Poll, PollOutput}};
 ///
-/// let coro = repeat(|x: i32| x + 1);
-/// let mut pollable = poll(coro);
-///
-/// // Poll first - coro needs input
-/// match pollable.next(Poll::Poll) {
-///     Step::Yielded(PollOutput::NeedsInput) => {}
-///     _ => panic!("Expected NeedsInput"),
-/// }
-///
-/// // Provide input
-/// match pollable.next(Poll::Input(5)) {
-///     Step::Yielded(PollOutput::Output(6)) => {}
-///     _ => panic!("Expected Output(6)"),
-/// }
+/// let mut coro = poll(repeat(|x: i32| x + 1));
+/// assert!(matches!(coro.next(Poll::Poll).unwrap_yielded(), PollOutput::NeedsInput));
+/// assert!(matches!(coro.next(Poll::Input(5)).unwrap_yielded(), PollOutput::Output(6)));
 /// ```
 pub fn poll<I, S, O, R>(coro: S) -> Pollable<S, O, R>
 where
@@ -137,13 +115,11 @@ where
     }
 }
 
-/// Wrap an [`InitSans`] coroutine in a [`Pollable`], handling the initial output.
+/// Initialize a coroutine now and buffer its first output or completion.
 ///
-/// If the coroutine has an initial output, it will be available on the first poll.
-/// If it completes immediately, the [`Pollable`] will return that completion.
-///
-/// **Note:** Because [`Pollable`] implements both [`Sans`] and [`InitSans`], this also serves
-/// as an adapter to use an [`InitSans`] where a [`Sans`] is required.
+/// The first [`Poll::Poll`] retrieves the buffered value. Unlike
+/// [`start`](crate::build::start), this constructor runs initialization immediately.
+/// See the [polling guide](crate::poll) for the protocol.
 pub fn init_poll<I, S, O, T>(init: T) -> Pollable<S, O, S::Return>
 where
     S: Sans<I, O>,
@@ -188,24 +164,6 @@ where
             }
             (PollState::Return(_), Poll::Input(i2)) => Step::Yielded(PollOutput::NeedsPoll(i2)),
             (PollState::Completed, _) => Step::Complete(Err(PollError::AlreadyComplete)),
-        }
-    }
-}
-
-// implment InitSans for Pollable
-impl<I, O, S> InitSans<Poll<I>, PollOutput<I, O>> for Pollable<S, O, S::Return>
-where
-    S: Sans<I, O>,
-{
-    type Next = Self;
-
-    fn init(
-        mut self,
-    ) -> Step<(PollOutput<I, O>, Self::Next), <Self::Next as Sans<Poll<I>, PollOutput<I, O>>>::Return>
-    {
-        match self.next(Poll::Poll) {
-            Step::Yielded(o) => Step::Yielded((o, self)),
-            Step::Complete(r) => Step::Complete(r),
         }
     }
 }
